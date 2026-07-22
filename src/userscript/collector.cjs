@@ -47,13 +47,22 @@
       if (!question.gabarito) return existing;
       var merged = Object.assign({}, existing);
       var changed = false;
-      ["gabarito", "statusCode", "apiIndex", "apiQuestionId", "answerSource"].forEach(function (key) {
+      ["gabarito", "answerField", "statusCode", "apiIndex", "apiQuestionId", "answerSource"].forEach(function (key) {
         if (question[key] !== undefined && question[key] !== existing[key]) {
           merged[key] = question[key];
           changed = true;
         }
       });
       return changed ? merged : existing;
+    }
+
+    function clearLegacyAnswer(existing) {
+      if (!existing || existing.answerSource !== "api" || existing.answerField) return existing;
+      var migrated = Object.assign({}, existing);
+      ["gabarito", "statusCode", "apiIndex", "apiQuestionId", "answerSource"].forEach(function (key) {
+        delete migrated[key];
+      });
+      return migrated;
     }
 
     async function captureCurrent(onStatus) {
@@ -84,7 +93,10 @@
         questions.push(enriched);
         writeQuestions(questions);
       } else {
-        var merged = mergeAnswer(questions[existingIndex], enriched);
+        var existing = questions[existingIndex];
+        var migrated = answerError ? clearLegacyAnswer(existing) : existing;
+        var merged = mergeAnswer(migrated, enriched);
+        if (merged === migrated && migrated !== existing) merged = migrated;
         if (merged !== questions[existingIndex]) {
           questions[existingIndex] = merged;
           questions = questions.slice();
@@ -130,7 +142,7 @@
             status("Questão #" + result.question.id + " já estava salva" + answerLabel + ".");
           }
           if (result.answerError && !result.question.gabarito) {
-            status("Questão #" + result.question.id + " salva, mas a API não retornou o gabarito.");
+            status("Questão #" + result.question.id + " salva, mas a API não retornou o gabarito: " + result.answerError.message);
           }
           if (limit > 0 && addedThisRun >= limit) {
             status("Limite de " + limit + " questão(ões) nova(s) atingido.");

@@ -73,8 +73,13 @@
         if (!raw || raw.idQuestao == null) {
           throw new Error("A API não retornou a questão.");
         }
+        var parsedAnswer = answer.extractCorrectAnswer(raw);
+        if (!parsedAnswer) {
+          throw new Error("A API retornou a questão, mas não expôs numeroAlternativaCorreta.");
+        }
         return {
-          gabarito: answer.statusToAnswer(raw.status),
+          gabarito: parsedAnswer.letter,
+          answerField: parsedAnswer.field,
           statusCode: raw.status == null ? null : Number(raw.status),
           apiIndex: index,
           apiQuestionId: String(raw.idQuestao)

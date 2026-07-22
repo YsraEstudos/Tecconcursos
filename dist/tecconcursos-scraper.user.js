@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      2.2.0
-// @description  Coleta questões, consulta o gabarito pela API, exporta TXT/JSON e aguarda 4-8 segundos aleatórios entre cliques.
+// @version      2.3.0
+// @description  Coleta questões, lê numeroAlternativaCorreta pela API, exporta TXT/JSON e aguarda 4-8 segundos aleatórios entre cliques.
 // @author       Codex
 // @match        https://www.tecconcursos.com.br/questoes/cadernos/*
 // @match        https://tecconcursos.com.br/questoes/cadernos/*
@@ -42,10 +42,37 @@
     return index >= 0 ? index + 1 : null;
   }
 
+  function valueToAnswer(value) {
+    if (value == null || value === "") return "";
+    var normalized = String(value).trim().toUpperCase();
+    if (/^[A-E]$/.test(normalized)) return normalized;
+    return statusToAnswer(normalized);
+  }
+
+  function extractCorrectAnswer(raw) {
+    var source = raw || {};
+    var candidates = [
+      ["numeroAlternativaCorreta", source.numeroAlternativaCorreta],
+      ["alternativaCorreta", source.alternativaCorreta],
+      ["gabaritoDefinitivo", source.gabaritoDefinitivo],
+      ["gabaritoPreliminar", source.gabaritoPreliminar],
+      ["gabarito", source.gabarito],
+      ["resolucao.alternativa", source.resolucao && source.resolucao.alternativa]
+    ];
+
+    for (var i = 0; i < candidates.length; i += 1) {
+      var answer = valueToAnswer(candidates[i][1]);
+      if (answer) return { letter: answer, field: candidates[i][0] };
+    }
+    return null;
+  }
+
   return {
     letters: LETTERS.slice(),
     statusToAnswer: statusToAnswer,
-    answerToStatus: answerToStatus
+    answerToStatus: answerToStatus,
+    valueToAnswer: valueToAnswer,
+    extractCorrectAnswer: extractCorrectAnswer
   };
 });
 
@@ -125,8 +152,13 @@
         if (!raw || raw.idQuestao == null) {
           throw new Error("A API não retornou a questão.");
         }
+        var parsedAnswer = answer.extractCorrectAnswer(raw);
+        if (!parsedAnswer) {
+          throw new Error("A API retornou a questão, mas não expôs numeroAlternativaCorreta.");
+        }
         return {
-          gabarito: answer.statusToAnswer(raw.status),
+          gabarito: parsedAnswer.letter,
+          answerField: parsedAnswer.field,
           statusCode: raw.status == null ? null : Number(raw.status),
           apiIndex: index,
           apiQuestionId: String(raw.idQuestao)
@@ -780,13 +812,22 @@
       if (!question.gabarito) return existing;
       var merged = Object.assign({}, existing);
       var changed = false;
-      ["gabarito", "statusCode", "apiIndex", "apiQuestionId", "answerSource"].forEach(function (key) {
+      ["gabarito", "answerField", "statusCode", "apiIndex", "apiQuestionId", "answerSource"].forEach(function (key) {
         if (question[key] !== undefined && question[key] !== existing[key]) {
           merged[key] = question[key];
           changed = true;
         }
       });
       return changed ? merged : existing;
+    }
+
+    function clearLegacyAnswer(existing) {
+      if (!existing || existing.answerSource !== "api" || existing.answerField) return existing;
+      var migrated = Object.assign({}, existing);
+      ["gabarito", "statusCode", "apiIndex", "apiQuestionId", "answerSource"].forEach(function (key) {
+        delete migrated[key];
+      });
+      return migrated;
     }
 
     async function captureCurrent(onStatus) {
@@ -817,7 +858,10 @@
         questions.push(enriched);
         writeQuestions(questions);
       } else {
-        var merged = mergeAnswer(questions[existingIndex], enriched);
+        var existing = questions[existingIndex];
+        var migrated = answerError ? clearLegacyAnswer(existing) : existing;
+        var merged = mergeAnswer(migrated, enriched);
+        if (merged === migrated && migrated !== existing) merged = migrated;
         if (merged !== questions[existingIndex]) {
           questions[existingIndex] = merged;
           questions = questions.slice();
@@ -863,7 +907,7 @@
             status("Questão #" + result.question.id + " já estava salva" + answerLabel + ".");
           }
           if (result.answerError && !result.question.gabarito) {
-            status("Questão #" + result.question.id + " salva, mas a API não retornou o gabarito.");
+            status("Questão #" + result.question.id + " salva, mas a API não retornou o gabarito: " + result.answerError.message);
           }
           if (limit > 0 && addedThisRun >= limit) {
             status("Limite de " + limit + " questão(ões) nova(s) atingido.");

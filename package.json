@@ -1,6 +1,6 @@
 {
   "name": "tecconcursos-scraper",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Coletor de questões com gabarito via API e userscript integrado",
   "main": "src/cli/scraper.js",
   "type": "module",

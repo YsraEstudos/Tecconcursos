@@ -13,10 +13,11 @@ test("bundle tem metadata válida, rota de caderno e atualização", () => {
   const bundle = fs.readFileSync(bundlePath, "utf8");
   assert.match(bundle, /^\/\/ ==UserScript==/);
   assert.match(bundle, /\/\/ ==\/UserScript==/);
-  assert.match(bundle, /@version\s+2\.2\.0/);
+  assert.match(bundle, /@version\s+2\.3\.0/);
   assert.match(bundle, /@match\s+https:\/\/www\.tecconcursos\.com\.br\/questoes\/cadernos\/\*/);
   assert.match(bundle, /@updateURL\s+https:\/\/raw\.githubusercontent\.com\/YsraEstudos\/Tecconcursos\/main\/tecconcursos-scraper\.user\.js/);
   assert.match(bundle, /\/api\/cadernos\//);
+  assert.match(bundle, /numeroAlternativaCorreta/);
   assert.match(bundle, /Gabarito:/);
   assert.doesNotMatch(bundle, /@require/);
   childProcess.execFileSync(process.execPath, ["--check", bundlePath], { cwd: projectRoot, stdio: "pipe" });

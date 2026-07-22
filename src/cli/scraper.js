@@ -2,7 +2,7 @@ import fs from 'fs';
 import { config } from './config.js';
 import answer from '../shared/answer.cjs';
 
-const { statusToAnswer } = answer;
+const { extractCorrectAnswer } = answer;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 10000;
 
@@ -57,14 +57,14 @@ async function fetchQuestion(cadernoId, index, cookies) {
 }
 
 function mapQuestion(raw, index) {
-  const s = raw.status;
-  const gabarito = statusToAnswer(s) || '?';
+  const parsedAnswer = extractCorrectAnswer(raw);
 
   return {
     index: index,
     idQuestao: raw.idQuestao,
-    gabarito,
-    statusCode: s,
+    gabarito: parsedAnswer?.letter ?? '?',
+    answerField: parsedAnswer?.field ?? null,
+    statusCode: raw.status ?? null,
     materia: raw.nomeMateria ?? '',
     assunto: raw.nomeAssunto ?? '',
     banca: raw.bancaSigla ?? '',

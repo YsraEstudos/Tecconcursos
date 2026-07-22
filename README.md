@@ -1,6 +1,6 @@
 # Tec Concursos — Coletor integrado
 
-Projeto com dois pontos de entrada que compartilham a mesma conversão de gabarito:
+Projeto com dois pontos de entrada que compartilham a leitura do gabarito oficial:
 
 - Userscript do Tampermonkey: coleta a questão atual, consulta o gabarito na API autenticada, salva incrementalmente e exporta TXT/JSON.
 - CLI via API: coleta um caderno inteiro usando cookies de sessão.
@@ -11,7 +11,7 @@ Link de instalação/atualização:
 
 https://raw.githubusercontent.com/YsraEstudos/Tecconcursos/main/tecconcursos-scraper.user.js
 
-Na página de um caderno, o painel permite iniciar, pausar, exportar TXT/JSON e limpar os dados. O intervalo antes de cada clique é aleatório entre 4 e 8 segundos. O gabarito é obtido pela API da própria sessão do Tec Concursos e também é aplicado às questões antigas que estavam salvas sem resposta.
+Na página de um caderno, o painel permite iniciar, pausar, exportar TXT/JSON e limpar os dados. O intervalo antes de cada clique é aleatório entre 4 e 8 segundos. O gabarito é lido do campo oficial `numeroAlternativaCorreta` retornado pela API da própria sessão do Tec Concursos. O campo `status` não é tratado como resposta. Questões antigas que tinham respostas inferidas incorretamente de `status` são limpas e podem ser reprocessadas.
 
 ## CLI
 
