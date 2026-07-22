@@ -1,231 +1,214 @@
 // ==UserScript==
-// @name         TecConcursos - Extração & Avanço Automático
+// @name         TecConcursos - Coletor de Questões Automático
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      1.0.0
-// @description  Extrai questões do Tec Concursos sequencialmente e avança automaticamente para a próxima questão. Suporta atualização direta via GitHub.
+// @version      1.1.0
+// @description  Extrai questões sequencialmente no Tec Concursos clicando na seta de próxima questão.
 // @author       Antigravity
 // @match        https://www.tecconcursos.com.br/*
-// @updateURL    https://raw.githubusercontent.com/YsraEstudos/Tecconcursos/main/tecconcursos-scraper.user.js
-// @downloadURL  https://raw.githubusercontent.com/YsraEstudos/Tecconcursos/main/tecconcursos-scraper.user.js
+// @match        https://tecconcursos.com.br/*
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @grant        GM_setClipboard
 // @grant        GM_download
-// @grant        GM_registerMenuCommand
+// @grant        GM_setClipboard
 // ==UserScript==
 
-(function() {
-    'use strict';
+(function () {
+  'use strict';
 
-    let isRunning = false;
-    let autoNextTimeout = null;
+  let isRunning = false;
+  let timerId = null;
+  let lastExtractedId = null;
 
-    // Carregar questões do armazenamento local do Tampermonkey
-    function getSavedQuestions() {
-        try {
-            return JSON.parse(GM_getValue('tec_questions', '[]'));
-        } catch(e) {
-            return [];
-        }
+  // Carregar dados salvos
+  function getQuestions() {
+    try {
+      return JSON.parse(GM_getValue('tec_questions_data', '[]'));
+    } catch (e) {
+      return [];
     }
+  }
 
-    // Salvar uma questão capturada
-    function saveQuestion(qData) {
-        let list = getSavedQuestions();
-        if (!list.some(q => q.id === qData.id)) {
-            list.push(qData);
-            GM_setValue('tec_questions', JSON.stringify(list));
-            updateUI();
-            return true;
-        }
-        return false;
-    }
+  // Salvar no armazenamento do Tampermonkey
+  function saveQuestions(list) {
+    GM_setValue('tec_questions_data', JSON.stringify(list));
+    updateWidgetUI();
+  }
 
-    // Extrair os dados da questão atual visível na tela
-    function extractCurrentQuestion() {
-        const bodyText = document.body.innerText;
-        const matchId = bodyText.match(/#(\d{5,8})/);
-        const questionId = matchId ? `#${matchId[1]}` : null;
+  // Capturar dados da questão visível na tela
+  function parseQuestion() {
+    const pageText = document.body.innerText;
+    
+    // Tenta encontrar o ID da questão (ex: #3702591)
+    const matchId = pageText.match(/#(\d{5,8})/);
+    const id = matchId ? `#${matchId[1]}` : null;
 
-        if (!questionId) return null;
+    if (!id) return null;
 
-        // Cabeçalho / Metadados
-        const headerEl = document.querySelector('header, .q-question-header, [data-testid="question-header"]');
-        const headerText = headerEl ? headerEl.innerText.trim() : '';
+    // Enunciado
+    const statementEl = document.querySelector('.q-question-enunciado, .q-enunciado, article, [data-testid="question-text"]');
+    const statement = statementEl ? statementEl.innerText.trim() : '';
 
-        // Enunciado
-        const statementEl = document.querySelector('.q-question-enunciado, .q-enunciado, article, section article');
-        const statementText = statementEl ? statementEl.innerText.trim() : '';
+    // Alternativas (A, B, C, D, E)
+    const optionEls = Array.from(document.querySelectorAll('.q-options li, .q-opcao, [role="radio"], [data-testid="option"]'));
+    const options = optionEls.map(el => el.innerText.trim()).filter(Boolean);
 
-        // Alternativas
-        const altEls = Array.from(document.querySelectorAll('.q-options li, .q-opcao, [role="radio"], [data-testid="option"]'));
-        const options = altEls.map(el => el.innerText.trim()).filter(Boolean);
+    // Cabeçalho / Matéria / Banca / Ano
+    const headerEl = document.querySelector('header, .q-question-header');
+    const header = headerEl ? headerEl.innerText.trim() : '';
 
-        return {
-            id: questionId,
-            header: headerText,
-            statement: statementText,
-            options: options,
-            url: window.location.href,
-            extractedAt: new Date().toISOString()
-        };
-    }
+    return {
+      id: id,
+      header: header,
+      statement: statement,
+      options: options,
+      url: window.location.href,
+      timestamp: new Date().toLocaleString('pt-BR')
+    };
+  }
 
-    // Localizar e clicar na seta "Próxima questão"
-    function clickNextButton() {
-        const selectors = [
-            '[aria-label="Próxima questão"]',
-            '[title="Próxima questão"]',
-            'a[aria-label="Próxima questão"]',
-            'button[aria-label="Próxima questão"]',
-            '.q-btn-next',
-            '.q-next-question'
-        ];
+  // Localizar o botão de "Próxima questão"
+  function findNextButton() {
+    // 1. Tentar por aria-label ou title
+    let btn = document.querySelector('[aria-label="Próxima questão"], [title="Próxima questão"], [aria-label*="Próxima"]');
+    if (btn) return btn;
 
-        for (let sel of selectors) {
-            try {
-                let el = document.querySelector(sel);
-                if (!el) {
-                    const buttons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-                    el = buttons.find(b => {
-                        const aria = b.getAttribute('aria-label') || '';
-                        const title = b.getAttribute('title') || '';
-                        const txt = b.innerText || '';
-                        return aria.includes('Próxima') || title.includes('Próxima') || txt.includes('Próxima');
-                    });
-                }
-                if (el) {
-                    el.click();
-                    return true;
-                }
-            } catch(e) {}
-        }
-        return false;
-    }
-
-    // Ciclo principal de automação
-    function step() {
-        if (!isRunning) return;
-
-        const qData = extractCurrentQuestion();
-        if (qData) {
-            const saved = saveQuestion(qData);
-            if (saved) {
-                console.log(`[Tampermonkey] Questão ${qData.id} capturada.`);
-            }
-        }
-
-        const clicked = clickNextButton();
-        if (!clicked) {
-            console.log('[Tampermonkey] Fim da lista de questões ou botão não encontrado.');
-            stopAutomation();
-            alert('Extração finalizada ou botão "Próxima questão" não encontrado!');
-            return;
-        }
-
-        // Aguarda 1.8 segundos antes de processar a próxima questão
-        autoNextTimeout = setTimeout(step, 1800);
-    }
-
-    function startAutomation() {
-        isRunning = true;
-        updateUI();
-        step();
-    }
-
-    function stopAutomation() {
-        isRunning = false;
-        if (autoNextTimeout) clearTimeout(autoNextTimeout);
-        updateUI();
-    }
-
-    // Exportar questões salvas como JSON
-    function exportJSON() {
-        const list = getSavedQuestions();
-        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(list, null, 2));
-        const dlAnchorElem = document.createElement('a');
-        dlAnchorElem.setAttribute("href", dataStr);
-        dlAnchorElem.setAttribute("download", `questoes_tecconcursos_${Date.now()}.json`);
-        document.body.appendChild(dlAnchorElem);
-        dlAnchorElem.click();
-        dlAnchorElem.remove();
-    }
-
-    // Limpar armazenamento local
-    function clearStorage() {
-        if (confirm('Deseja apagar todas as questões salvas no Tampermonkey?')) {
-            GM_setValue('tec_questions', '[]');
-            updateUI();
-        }
-    }
-
-    // Painel visual de controle no canto da página
-    function createUI() {
-        if (document.getElementById('tec-scraper-ui')) return;
-
-        const panel = document.createElement('div');
-        panel.id = 'tec-scraper-ui';
-        panel.style.position = 'fixed';
-        panel.style.bottom = '20px';
-        panel.style.right = '20px';
-        panel.style.zIndex = '999999';
-        panel.style.backgroundColor = '#1e1e2e';
-        panel.style.color = '#cdd6f4';
-        panel.style.padding = '14px 18px';
-        panel.style.borderRadius = '12px';
-        panel.style.boxShadow = '0 8px 24px rgba(0,0,0,0.4)';
-        panel.style.fontFamily = 'Segoe UI, Roboto, sans-serif';
-        panel.style.fontSize = '13px';
-        panel.style.display = 'flex';
-        panel.style.flexDirection = 'column';
-        panel.style.gap = '8px';
-        panel.style.border = '1px solid #45475a';
-
-        panel.innerHTML = `
-            <div style="font-weight: bold; font-size: 14px; color: #89b4fa; display: flex; justify-content: space-between; align-items: center; gap: 12px;">
-                <span>🎯 Tec Scraper</span>
-                <span id="tec-count" style="background: #313244; padding: 2px 8px; border-radius: 8px; font-size: 12px;">0 salvas</span>
-            </div>
-            <div style="display: flex; gap: 6px;">
-                <button id="tec-btn-toggle" style="flex: 1; padding: 6px 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; background: #a6e3a1; color: #11111b;">▶️ Iniciar</button>
-                <button id="tec-btn-export" style="padding: 6px 10px; border: none; border-radius: 6px; cursor: pointer; background: #89b4fa; color: #11111b; font-weight: bold;">💾 Exportar</button>
-                <button id="tec-btn-clear" style="padding: 6px 8px; border: none; border-radius: 6px; cursor: pointer; background: #f38ba8; color: #11111b;">🗑️</button>
-            </div>
-        `;
-
-        document.body.appendChild(panel);
-
-        document.getElementById('tec-btn-toggle').addEventListener('click', () => {
-            if (isRunning) stopAutomation();
-            else startAutomation();
-        });
-
-        document.getElementById('tec-btn-export').addEventListener('click', exportJSON);
-        document.getElementById('tec-btn-clear').addEventListener('click', clearStorage);
-
-        updateUI();
-    }
-
-    function updateUI() {
-        const countSpan = document.getElementById('tec-count');
-        const toggleBtn = document.getElementById('tec-btn-toggle');
-        const list = getSavedQuestions();
-
-        if (countSpan) countSpan.innerText = `${list.length} salvas`;
-        if (toggleBtn) {
-            if (isRunning) {
-                toggleBtn.innerText = '⏸️ Pausar';
-                toggleBtn.style.background = '#f9e2af';
-            } else {
-                toggleBtn.innerText = '▶️ Iniciar';
-                toggleBtn.style.background = '#a6e3a1';
-            }
-        }
-    }
-
-    // Inicializar quando a página carregar
-    window.addEventListener('load', () => {
-        setTimeout(createUI, 1200);
+    // 2. Busca genérica por texto ou atributos em elementos clicáveis
+    const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"], span[role="button"]'));
+    return candidates.find(el => {
+      const label = (el.getAttribute('aria-label') || '').toLowerCase();
+      const title = (el.getAttribute('title') || '').toLowerCase();
+      const text = (el.innerText || '').toLowerCase().trim();
+      return label.includes('próxima') || title.includes('próxima') || text === 'próxima' || text.includes('próxima questão');
     });
+  }
 
+  // Loop de execução
+  function processStep() {
+    if (!isRunning) return;
+
+    const q = parseQuestion();
+
+    if (q && q.id !== lastExtractedId) {
+      const list = getQuestions();
+      if (!list.some(item => item.id === q.id)) {
+        list.push(q);
+        saveQuestions(list);
+        console.log(`[TecScraper] Questão ${q.id} capturada.`);
+      }
+      lastExtractedId = q.id;
+    }
+
+    const nextBtn = findNextButton();
+
+    if (nextBtn) {
+      nextBtn.click();
+      // Aguarda 1.8s para a nova questão carregar
+      timerId = setTimeout(processStep, 1800);
+    } else {
+      stop();
+      alert('⚠️ Fim da lista ou botão "Próxima questão" não encontrado.');
+    }
+  }
+
+  function start() {
+    if (isRunning) return;
+    isRunning = true;
+    updateWidgetUI();
+    processStep();
+  }
+
+  function stop() {
+    isRunning = false;
+    if (timerId) clearTimeout(timerId);
+    updateWidgetUI();
+  }
+
+  function exportJSON() {
+    const data = JSON.stringify(getQuestions(), null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `questoes_tecconcursos_${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function clearAll() {
+    if (confirm('Deseja apagar todas as questões salvas no Tampermonkey?')) {
+      saveQuestions([]);
+      lastExtractedId = null;
+    }
+  }
+
+  // Painel Flutuante na tela do TecConcursos
+  function renderWidget() {
+    if (document.getElementById('tec-floating-widget')) return;
+
+    const div = document.createElement('div');
+    div.id = 'tec-floating-widget';
+    div.style.cssText = `
+      position: fixed;
+      bottom: 25px;
+      right: 25px;
+      z-index: 9999999;
+      background: #111827;
+      color: #F3F4F6;
+      border: 2px solid #374151;
+      padding: 16px;
+      border-radius: 14px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      min-width: 220px;
+    `;
+
+    div.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <strong style="color: #60A5FA; font-size: 14px;">🎯 Tec Scraper</strong>
+        <span id="tec-badge" style="background: #1F2937; padding: 3px 8px; border-radius: 12px; font-weight: bold; color: #10B981;">0 salvas</span>
+      </div>
+      <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+        <button id="tec-btn-start" style="flex: 1; padding: 8px; border: none; border-radius: 8px; background: #10B981; color: #fff; font-weight: bold; cursor: pointer;">▶️ Iniciar</button>
+        <button id="tec-btn-stop" style="flex: 1; padding: 8px; border: none; border-radius: 8px; background: #EF4444; color: #fff; font-weight: bold; cursor: pointer;">⏸️ Pausar</button>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button id="tec-btn-export" style="flex: 1; padding: 6px; border: none; border-radius: 6px; background: #3B82F6; color: #fff; cursor: pointer; font-size: 12px;">💾 Baixar JSON</button>
+        <button id="tec-btn-clear" style="padding: 6px 10px; border: none; border-radius: 6px; background: #6B7280; color: #fff; cursor: pointer; font-size: 12px;">🗑️</button>
+      </div>
+    `;
+
+    document.body.appendChild(div);
+
+    document.getElementById('tec-btn-start').onclick = start;
+    document.getElementById('tec-btn-stop').onclick = stop;
+    document.getElementById('tec-btn-export').onclick = exportJSON;
+    document.getElementById('tec-btn-clear').onclick = clearAll;
+
+    updateWidgetUI();
+  }
+
+  function updateWidgetUI() {
+    const badge = document.getElementById('tec-badge');
+    const btnStart = document.getElementById('tec-btn-start');
+    const count = getQuestions().length;
+
+    if (badge) badge.innerText = `${count} salvas`;
+    if (btnStart) {
+      if (isRunning) {
+        btnStart.style.opacity = '0.5';
+        btnStart.innerText = '⏳ Rodando...';
+      } else {
+        btnStart.style.opacity = '1';
+        btnStart.innerText = '▶️ Iniciar';
+      }
+    }
+  }
+
+  // Inicializar widget assim que a página carregar
+  if (document.readyState === 'complete') {
+    renderWidget();
+  } else {
+    window.addEventListener('load', renderWidget);
+  }
 })();
