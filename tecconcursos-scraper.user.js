@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Automático
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      1.1.0
+// @version      1.1.1
 // @description  Extrai questões sequencialmente no Tec Concursos clicando na seta de próxima questão.
 // @author       Antigravity
 // @match        https://www.tecconcursos.com.br/*
 // @match        https://tecconcursos.com.br/*
+// @updateURL    https://ysraestudos.github.io/Tecconcursos/tecconcursos-scraper.user.js
+// @downloadURL  https://ysraestudos.github.io/Tecconcursos/tecconcursos-scraper.user.js
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_download
