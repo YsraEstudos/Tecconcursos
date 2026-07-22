@@ -49,3 +49,13 @@ Você pode ajustar os seguintes parâmetros em `config.js`:
 - [config.js](file:///c:/Users/israe/OneDrive/Desktop/Projetos/Tecconcursos/config.js) - Arquivo de opções e parâmetros.
 - [scraper.js](file:///c:/Users/israe/OneDrive/Desktop/Projetos/Tecconcursos/scraper.js) - Script principal de automação com o Playwright.
 - [questoes.json](file:///c:/Users/israe/OneDrive/Desktop/Projetos/Tecconcursos/questoes.json) - Arquivo final com as questões salvas.
+
+## Userscript principal
+
+O fluxo recomendado é o userscript do Tampermonkey, que funciona diretamente na página do caderno.
+
+Ele atende as rotas `/questoes/cadernos/*` e `/questoes/filtrar*`, salva incrementalmente e oferece exportação TXT/JSON.
+
+O intervalo entre cliques é variável, entre 4 e 8 segundos, e pode ser interrompido pelo botão Pausar.
+
+Para gerar o arquivo instalável, execute `npm run build:userscript`.
