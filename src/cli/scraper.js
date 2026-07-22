@@ -1,7 +1,8 @@
 import fs from 'fs';
 import { config } from './config.js';
+import answer from '../shared/answer.cjs';
 
-const LETRAS = ['A', 'B', 'C', 'D', 'E'];
+const { statusToAnswer } = answer;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 10000;
 
@@ -57,7 +58,7 @@ async function fetchQuestion(cadernoId, index, cookies) {
 
 function mapQuestion(raw, index) {
   const s = raw.status;
-  const gabarito = s >= 1 && s <= 5 ? LETRAS[s - 1] : '?';
+  const gabarito = statusToAnswer(s) || '?';
 
   return {
     index: index,
@@ -81,17 +82,17 @@ function mapQuestion(raw, index) {
 async function run() {
   const { cadernoId, outputFile, maxQuestions, logLevel } = config;
 
-  // Cookies podem vir do config.js OU da variável de ambiente TEC_COOKIES
+  // Cookies podem vir de src/cli/config.js OU da variável de ambiente TEC_COOKIES
   const cookies = config.cookies || process.env.TEC_COOKIES || '';
 
   if (!cadernoId) {
-    console.error('ERRO: informe o cadernoId no config.js');
+    console.error('ERRO: informe o cadernoId em src/cli/config.js');
     process.exit(1);
   }
   if (!cookies) {
-    console.error('ERRO: informe os cookies de sessão no config.js');
+    console.error('ERRO: informe os cookies de sessão em src/cli/config.js');
     console.error('Ou use a variável de ambiente TEC_COOKIES');
-    console.error('Leia as instruções no próprio config.js sobre como obter os cookies.');
+    console.error('Leia as instruções no próprio src/cli/config.js sobre como obter os cookies.');
     process.exit(1);
   }
 

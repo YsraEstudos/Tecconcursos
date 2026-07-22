@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const projectRoot = path.resolve(__dirname, "..");
+const sharedDir = path.join(projectRoot, "src", "shared");
 const sourceDir = path.join(projectRoot, "src", "userscript");
 const distDir = path.join(projectRoot, "dist");
 
@@ -9,8 +10,8 @@ const metadata = [
   "// ==UserScript==",
   "// @name         TecConcursos - Coletor de Questões Pro",
   "// @namespace    https://github.com/YsraEstudos/Tecconcursos",
-  "// @version      2.1.0",
-  "// @description  Coleta questões de cadernos, exporta TXT/JSON e aguarda 4-8 segundos aleatórios entre cliques.",
+  "// @version      2.2.0",
+  "// @description  Coleta questões, consulta o gabarito pela API, exporta TXT/JSON e aguarda 4-8 segundos aleatórios entre cliques.",
   "// @author       Codex",
   "// @match        https://www.tecconcursos.com.br/questoes/cadernos/*",
   "// @match        https://tecconcursos.com.br/questoes/cadernos/*",
@@ -27,19 +28,23 @@ const metadata = [
 ].join("\n");
 
 const moduleOrder = [
-  "selectors.cjs",
-  "parse-question.cjs",
-  "format.cjs",
-  "storage.cjs",
-  "timing.cjs",
-  "navigation.cjs",
-  "collector.cjs",
-  "ui.cjs",
-  "entry.cjs"
+  { dir: sharedDir, name: "answer.cjs" },
+  { dir: sourceDir, name: "api.cjs" },
+  ...[
+    "selectors.cjs",
+    "parse-question.cjs",
+    "format.cjs",
+    "storage.cjs",
+    "timing.cjs",
+    "navigation.cjs",
+    "collector.cjs",
+    "ui.cjs",
+    "entry.cjs"
+  ].map((name) => ({ dir: sourceDir, name }))
 ];
 
-const modules = moduleOrder.map((name) => {
-  const filePath = path.join(sourceDir, name);
+const modules = moduleOrder.map(({ dir, name }) => {
+  const filePath = path.join(dir, name);
   return "// ---- " + name + " ----\n" + fs.readFileSync(filePath, "utf8").trim();
 });
 

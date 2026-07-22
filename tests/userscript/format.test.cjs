@@ -10,11 +10,13 @@ test("gera TXT legível com metadados e alternativas", () => {
     subject: "Língua Portuguesa",
     topic: "Coesão",
     organization: "UNASP",
+    gabarito: "C",
     statement: "Texto da questão.",
     options: [{ letter: "A", text: "Primeira opção" }]
   }]);
   assert.match(output, /Total: 1/);
   assert.match(output, /QUESTAO 1 \(#3702591\)/);
   assert.match(output, /Materia: Língua Portuguesa/);
+  assert.match(output, /Gabarito: C/);
   assert.match(output, /A\) Primeira opção/);
 });

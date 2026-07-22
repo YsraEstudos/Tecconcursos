@@ -13,6 +13,8 @@
       document: documentNode,
       storage: storage,
       parser: modules.parseQuestion,
+      api: modules.api,
+      apiOptions: { retryCount: 3, retryDelayMs: 1000 },
       navigation: modules.navigation,
       format: modules.format,
       timing: modules.timing,

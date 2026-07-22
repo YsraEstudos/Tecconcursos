@@ -52,7 +52,7 @@ const USER_DATA_DIR = path.resolve(__dirname, '..', 'user_data');
     .join('; ');
 
   console.log('\n===========================================================');
-  console.log('COOKIES EXTRAÍDOS (copie a linha abaixo para o config.js):');
+  console.log('COOKIES EXTRAÍDOS (copie a linha abaixo para src/cli/config.js):');
   console.log('===========================================================\n');
 
   console.log(cookieString);
@@ -63,8 +63,8 @@ const USER_DATA_DIR = path.resolve(__dirname, '..', 'user_data');
   fs.writeFileSync(outputFile, cookieString, 'utf-8');
   console.log(`Cookies também salvos em: ${outputFile}`);
 
-  // Sugestão de config.js
-  console.log('\n📋 Exemplo de config.js:');
+  // Sugestão de src/cli/config.js
+  console.log('\n📋 Exemplo para src/cli/config.js:');
   console.log('```');
   console.log(`cookies: '${cookieString.substring(0, 80)}...',`);
   console.log('```');

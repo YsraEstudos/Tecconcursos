@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      2.1.0
-// @description  Coleta questões de cadernos, exporta TXT/JSON e aguarda 4-8 segundos aleatórios entre cliques.
+// @version      2.2.0
+// @description  Coleta questões, consulta o gabarito pela API, exporta TXT/JSON e aguarda 4-8 segundos aleatórios entre cliques.
 // @author       Codex
 // @match        https://www.tecconcursos.com.br/questoes/cadernos/*
 // @match        https://tecconcursos.com.br/questoes/cadernos/*
@@ -18,6 +18,150 @@
 // ==/UserScript==
 
 (function () {
+// ---- answer.cjs ----
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.answer = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  var LETTERS = ["A", "B", "C", "D", "E"];
+
+  function statusToAnswer(status) {
+    var numeric = Number(status);
+    return numeric >= 1 && numeric <= LETTERS.length ? LETTERS[numeric - 1] : "";
+  }
+
+  function answerToStatus(letter) {
+    var normalized = String(letter || "").trim().toUpperCase();
+    var index = LETTERS.indexOf(normalized);
+    return index >= 0 ? index + 1 : null;
+  }
+
+  return {
+    letters: LETTERS.slice(),
+    statusToAnswer: statusToAnswer,
+    answerToStatus: answerToStatus
+  };
+});
+
+// ---- api.cjs ----
+(function (root, factory) {
+  var api = factory(
+    typeof module !== "undefined" && module.exports
+      ? require("../shared/answer.cjs")
+      : root.TecConcursosModules.answer
+  );
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.api = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function (answer) {
+  "use strict";
+
+  function getCadernoId(documentNode) {
+    var locationLike = documentNode && documentNode.location;
+    var pathname = locationLike && locationLike.pathname ? String(locationLike.pathname) : "";
+    var match = pathname.match(/\/questoes\/cadernos\/(\d+)/i);
+    return match ? match[1] : "";
+  }
+
+  function getQuestionIndex(documentNode, question) {
+    if (question && Number(question.cadernoIndex) > 0) {
+      return Number(question.cadernoIndex);
+    }
+    var body = documentNode && documentNode.body;
+    var text = body ? String(body.innerText || body.textContent || "") : "";
+    var match = text.match(/Quest(?:ão|ao)\s+(\d+)\s+de\b/i);
+    return match ? Number(match[1]) : null;
+  }
+
+  function getFetch(documentNode, fetchImpl) {
+    if (typeof fetchImpl === "function") return fetchImpl;
+    var windowLike = documentNode && documentNode.defaultView;
+    if (windowLike && typeof windowLike.fetch === "function") return windowLike.fetch.bind(windowLike);
+    if (typeof fetch === "function") return fetch;
+    throw new Error("Fetch não está disponível nesta página.");
+  }
+
+  function wait(ms, waitImpl) {
+    if (typeof waitImpl === "function") return waitImpl(ms);
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  async function fetchQuestionAnswer(documentNode, question, options) {
+    var config = options || {};
+    var cadernoId = getCadernoId(documentNode);
+    var index = getQuestionIndex(documentNode, question);
+    if (!cadernoId) throw new Error("ID do caderno não encontrado.");
+    if (!index) throw new Error("Índice da questão não encontrado.");
+
+    var fetchImpl = getFetch(documentNode, config.fetchImpl);
+    var retryCount = Number(config.retryCount) > 0 ? Math.floor(Number(config.retryCount)) : 3;
+    var retryDelayMs = Number(config.retryDelayMs) >= 0 ? Number(config.retryDelayMs) : 1000;
+    var url = "/api/cadernos/" + encodeURIComponent(cadernoId) +
+      "/questoes/" + encodeURIComponent(index) + "?atualizarCronometro=true";
+    var lastError = null;
+
+    for (var attempt = 1; attempt <= retryCount; attempt += 1) {
+      try {
+        var response = await fetchImpl(url, {
+          credentials: "include",
+          headers: {
+            "Accept": "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest"
+          }
+        });
+        if (!response || !response.ok) {
+          throw new Error("HTTP " + (response && response.status ? response.status : "desconhecido"));
+        }
+        var data = await response.json();
+        var raw = data && data.questao;
+        if (!raw || raw.idQuestao == null) {
+          throw new Error("A API não retornou a questão.");
+        }
+        return {
+          gabarito: answer.statusToAnswer(raw.status),
+          statusCode: raw.status == null ? null : Number(raw.status),
+          apiIndex: index,
+          apiQuestionId: String(raw.idQuestao)
+        };
+      } catch (error) {
+        lastError = error;
+        if (attempt < retryCount) await wait(retryDelayMs * attempt, config.waitImpl);
+      }
+    }
+    throw lastError || new Error("Não foi possível consultar o gabarito.");
+  }
+
+  async function enrichQuestionFromApi(documentNode, question, options) {
+    try {
+      var answerData = await fetchQuestionAnswer(documentNode, question, options);
+      return {
+        question: Object.assign({}, question, answerData, { answerSource: "api" }),
+        error: null
+      };
+    } catch (error) {
+      return {
+        question: question,
+        error: error
+      };
+    }
+  }
+
+  return {
+    getCadernoId: getCadernoId,
+    getQuestionIndex: getQuestionIndex,
+    fetchQuestionAnswer: fetchQuestionAnswer,
+    enrichQuestionFromApi: enrichQuestionFromApi
+  };
+});
+
 // ---- selectors.cjs ----
 (function (root, factory) {
   var api = factory();
@@ -199,6 +343,13 @@
     return match ? match[1] : "";
   }
 
+  function extractQuestionIndex(documentNode) {
+    var bodyNode = documentNode && documentNode.body;
+    var text = bodyNode ? textOf(bodyNode) : "";
+    var match = text.match(/Quest(?:ão|ao)\s+(\d+)\s+de\b/i);
+    return match ? Number(match[1]) : null;
+  }
+
   function extractQuestionId(rootNode, documentNode) {
     var idNode = first(rootNode, [".id-questao", "[data-testid='question-id']", "a[href*='/questoes/']"]);
     var fromNode = extractId(textOf(idNode));
@@ -280,6 +431,7 @@
       options: extractAlternatives(rootNode),
       url: locationLike && locationLike.href ? String(locationLike.href) : "",
       pageKind: selectors.getPageKind(locationLike),
+      cadernoIndex: extractQuestionIndex(documentNode),
       extractedAt: (now || new Date()).toISOString()
     };
   }
@@ -290,6 +442,7 @@
     normalizeBlock: normalizeBlock,
     extractQuestionId: extractQuestionId,
     extractAlternatives: extractAlternatives,
+    extractQuestionIndex: extractQuestionIndex,
     parseQuestionFromDocument: parseQuestionFromDocument
   };
 });
@@ -318,6 +471,7 @@
       "Materia: " + safe(question.subject),
       "Assunto: " + safe(question.topic),
       "Orgao: " + safe(question.organization),
+      "Gabarito: " + safe(question.gabarito),
       "",
       "ENUNCIADO:",
       safe(question.statement),
@@ -582,6 +736,7 @@
     typeof module !== "undefined" && module.exports ? {
       selectors: require("./selectors.cjs"),
       parser: require("./parse-question.cjs"),
+      api: require("./api.cjs"),
       navigation: require("./navigation.cjs"),
       format: require("./format.cjs"),
       timing: require("./timing.cjs")
@@ -600,6 +755,7 @@
     var documentNode = config.document;
     var storage = config.storage;
     var parser = config.parser;
+    var questionApi = config.api || deps.api;
     var navigation = config.navigation;
     var format = config.format;
     var timing = config.timing;
@@ -607,6 +763,7 @@
     var waitTimeoutMs = Number(config.waitTimeoutMs) > 0 ? Number(config.waitTimeoutMs) : 15000;
     var minClickDelayMs = Number(config.minClickDelayMs) > 0 ? Number(config.minClickDelayMs) : 4000;
     var maxClickDelayMs = Number(config.maxClickDelayMs) > 0 ? Number(config.maxClickDelayMs) : 8000;
+    var apiOptions = config.apiOptions || { retryCount: 3, retryDelayMs: 1000 };
     var running = false;
     var runToken = 0;
 
@@ -619,16 +776,63 @@
       storage.write(storageKey, questions);
     }
 
-    function captureCurrent() {
+    function mergeAnswer(existing, question) {
+      if (!question.gabarito) return existing;
+      var merged = Object.assign({}, existing);
+      var changed = false;
+      ["gabarito", "statusCode", "apiIndex", "apiQuestionId", "answerSource"].forEach(function (key) {
+        if (question[key] !== undefined && question[key] !== existing[key]) {
+          merged[key] = question[key];
+          changed = true;
+        }
+      });
+      return changed ? merged : existing;
+    }
+
+    async function captureCurrent(onStatus) {
       var question = parser.parseQuestionFromDocument(documentNode);
-      if (!question) return { question: null, added: false, questions: readQuestions() };
-      var questions = readQuestions();
-      var exists = questions.some(function (item) { return String(item.id) === String(question.id); });
-      if (!exists) {
-        questions.push(question);
-        writeQuestions(questions);
+      if (!question) return { question: null, added: false, updated: false, questions: readQuestions() };
+
+      var enriched = question;
+      var answerError = null;
+      if (
+        question.pageKind === "caderno" &&
+        questionApi &&
+        typeof questionApi.enrichQuestionFromApi === "function"
+      ) {
+        onStatus("Consultando gabarito da questão #" + question.id + "...");
+        var apiResult = await questionApi.enrichQuestionFromApi(documentNode, question, apiOptions);
+        enriched = apiResult.question || question;
+        answerError = apiResult.error || null;
       }
-      return { question: question, added: !exists, questions: questions };
+
+      var questions = readQuestions();
+      var existingIndex = questions.findIndex(function (item) {
+        return String(item.id) === String(enriched.id);
+      });
+      var added = existingIndex < 0;
+      var updated = false;
+
+      if (added) {
+        questions.push(enriched);
+        writeQuestions(questions);
+      } else {
+        var merged = mergeAnswer(questions[existingIndex], enriched);
+        if (merged !== questions[existingIndex]) {
+          questions[existingIndex] = merged;
+          questions = questions.slice();
+          writeQuestions(questions);
+          updated = true;
+        }
+      }
+
+      return {
+        question: enriched,
+        added: added,
+        updated: updated,
+        answerError: answerError,
+        questions: questions
+      };
     }
 
     async function start(settings) {
@@ -642,19 +846,27 @@
       var status = typeof runSettings.onStatus === "function" ? runSettings.onStatus : function () {};
       try {
         while (running && token === runToken) {
-          var result = captureCurrent();
+          var result = await captureCurrent(status);
           if (!result.question) {
             status("Nenhuma questão compatível encontrada nesta página.");
             break;
           }
+          var answerLabel = result.question.gabarito
+            ? " | Gabarito: " + result.question.gabarito
+            : " | Gabarito indisponível";
           if (result.added) {
             addedThisRun += 1;
-            status("Questão #" + result.question.id + " salva (" + result.questions.length + ").");
+            status("Questão #" + result.question.id + " salva (" + result.questions.length + ")" + answerLabel + ".");
+          } else if (result.updated) {
+            status("Questão #" + result.question.id + " atualizada com o gabarito" + answerLabel + ".");
           } else {
-            status("Questão #" + result.question.id + " já estava salva.");
+            status("Questão #" + result.question.id + " já estava salva" + answerLabel + ".");
+          }
+          if (result.answerError && !result.question.gabarito) {
+            status("Questão #" + result.question.id + " salva, mas a API não retornou o gabarito.");
           }
           if (limit > 0 && addedThisRun >= limit) {
-            status("Limite de " + limit + " questão(ões) atingido.");
+            status("Limite de " + limit + " questão(ões) nova(s) atingido.");
             break;
           }
 
@@ -882,6 +1094,8 @@
       document: documentNode,
       storage: storage,
       parser: modules.parseQuestion,
+      api: modules.api,
+      apiOptions: { retryCount: 3, retryDelayMs: 1000 },
       navigation: modules.navigation,
       format: modules.format,
       timing: modules.timing,

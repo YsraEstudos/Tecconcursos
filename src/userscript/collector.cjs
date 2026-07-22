@@ -3,6 +3,7 @@
     typeof module !== "undefined" && module.exports ? {
       selectors: require("./selectors.cjs"),
       parser: require("./parse-question.cjs"),
+      api: require("./api.cjs"),
       navigation: require("./navigation.cjs"),
       format: require("./format.cjs"),
       timing: require("./timing.cjs")
@@ -21,6 +22,7 @@
     var documentNode = config.document;
     var storage = config.storage;
     var parser = config.parser;
+    var questionApi = config.api || deps.api;
     var navigation = config.navigation;
     var format = config.format;
     var timing = config.timing;
@@ -28,6 +30,7 @@
     var waitTimeoutMs = Number(config.waitTimeoutMs) > 0 ? Number(config.waitTimeoutMs) : 15000;
     var minClickDelayMs = Number(config.minClickDelayMs) > 0 ? Number(config.minClickDelayMs) : 4000;
     var maxClickDelayMs = Number(config.maxClickDelayMs) > 0 ? Number(config.maxClickDelayMs) : 8000;
+    var apiOptions = config.apiOptions || { retryCount: 3, retryDelayMs: 1000 };
     var running = false;
     var runToken = 0;
 
@@ -40,16 +43,63 @@
       storage.write(storageKey, questions);
     }
 
-    function captureCurrent() {
+    function mergeAnswer(existing, question) {
+      if (!question.gabarito) return existing;
+      var merged = Object.assign({}, existing);
+      var changed = false;
+      ["gabarito", "statusCode", "apiIndex", "apiQuestionId", "answerSource"].forEach(function (key) {
+        if (question[key] !== undefined && question[key] !== existing[key]) {
+          merged[key] = question[key];
+          changed = true;
+        }
+      });
+      return changed ? merged : existing;
+    }
+
+    async function captureCurrent(onStatus) {
       var question = parser.parseQuestionFromDocument(documentNode);
-      if (!question) return { question: null, added: false, questions: readQuestions() };
-      var questions = readQuestions();
-      var exists = questions.some(function (item) { return String(item.id) === String(question.id); });
-      if (!exists) {
-        questions.push(question);
-        writeQuestions(questions);
+      if (!question) return { question: null, added: false, updated: false, questions: readQuestions() };
+
+      var enriched = question;
+      var answerError = null;
+      if (
+        question.pageKind === "caderno" &&
+        questionApi &&
+        typeof questionApi.enrichQuestionFromApi === "function"
+      ) {
+        onStatus("Consultando gabarito da questão #" + question.id + "...");
+        var apiResult = await questionApi.enrichQuestionFromApi(documentNode, question, apiOptions);
+        enriched = apiResult.question || question;
+        answerError = apiResult.error || null;
       }
-      return { question: question, added: !exists, questions: questions };
+
+      var questions = readQuestions();
+      var existingIndex = questions.findIndex(function (item) {
+        return String(item.id) === String(enriched.id);
+      });
+      var added = existingIndex < 0;
+      var updated = false;
+
+      if (added) {
+        questions.push(enriched);
+        writeQuestions(questions);
+      } else {
+        var merged = mergeAnswer(questions[existingIndex], enriched);
+        if (merged !== questions[existingIndex]) {
+          questions[existingIndex] = merged;
+          questions = questions.slice();
+          writeQuestions(questions);
+          updated = true;
+        }
+      }
+
+      return {
+        question: enriched,
+        added: added,
+        updated: updated,
+        answerError: answerError,
+        questions: questions
+      };
     }
 
     async function start(settings) {
@@ -63,19 +113,27 @@
       var status = typeof runSettings.onStatus === "function" ? runSettings.onStatus : function () {};
       try {
         while (running && token === runToken) {
-          var result = captureCurrent();
+          var result = await captureCurrent(status);
           if (!result.question) {
             status("Nenhuma questão compatível encontrada nesta página.");
             break;
           }
+          var answerLabel = result.question.gabarito
+            ? " | Gabarito: " + result.question.gabarito
+            : " | Gabarito indisponível";
           if (result.added) {
             addedThisRun += 1;
-            status("Questão #" + result.question.id + " salva (" + result.questions.length + ").");
+            status("Questão #" + result.question.id + " salva (" + result.questions.length + ")" + answerLabel + ".");
+          } else if (result.updated) {
+            status("Questão #" + result.question.id + " atualizada com o gabarito" + answerLabel + ".");
           } else {
-            status("Questão #" + result.question.id + " já estava salva.");
+            status("Questão #" + result.question.id + " já estava salva" + answerLabel + ".");
+          }
+          if (result.answerError && !result.question.gabarito) {
+            status("Questão #" + result.question.id + " salva, mas a API não retornou o gabarito.");
           }
           if (limit > 0 && addedThisRun >= limit) {
-            status("Limite de " + limit + " questão(ões) atingido.");
+            status("Limite de " + limit + " questão(ões) nova(s) atingido.");
             break;
           }
 

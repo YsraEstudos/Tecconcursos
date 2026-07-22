@@ -1,61 +1,50 @@
-# Sistema de Extração Sequencial de Questões (Tec Concursos)
+# Tec Concursos — Coletor integrado
 
-Este projeto automatiza a navegação e a extração sequencial de questões no site do Tec Concursos utilizando **Playwright**.
+Projeto com dois pontos de entrada que compartilham a mesma conversão de gabarito:
 
-## 📌 Funcionalidades
+- Userscript do Tampermonkey: coleta a questão atual, consulta o gabarito na API autenticada, salva incrementalmente e exporta TXT/JSON.
+- CLI via API: coleta um caderno inteiro usando cookies de sessão.
 
-- **Sessão Persistente**: Salva o login na pasta `./user_data`, para que você não precise se autenticar toda vez.
-- **Detecção Sequencial**: Captura o enunciado, ID da questão (ex: `#3702591`), alternativas (A, B, C, D, E) e metadados.
-- **Clique Automático na Seta**: Avança para a próxima questão automaticamente utilizando o seletor `Próxima questão`.
-- **Salvamento Incremental**: Grava cada questão em tempo real no arquivo `questoes.json`, prevenindo perda de dados se você parar a execução.
+## Userscript
 
----
+Link de instalação/atualização:
 
-## 🚀 Como Usar
+https://raw.githubusercontent.com/YsraEstudos/Tecconcursos/main/tecconcursos-scraper.user.js
 
-### 1. Instalar as Dependências
+Na página de um caderno, o painel permite iniciar, pausar, exportar TXT/JSON e limpar os dados. O intervalo antes de cada clique é aleatório entre 4 e 8 segundos. O gabarito é obtido pela API da própria sessão do Tec Concursos e também é aplicado às questões antigas que estavam salvas sem resposta.
 
-```bash
+## CLI
+
+Instale as dependências:
+
+~~~text
 npm install
-```
+~~~
 
-### 2. Executar o Extrair de Questões
+Configure o caderno e os cookies em src/cli/config.js e execute:
 
-```bash
+~~~text
 npm start
-```
+~~~
 
-Ou diretamente:
+Para gerar cookies usando o navegador Playwright:
 
-```bash
-node scraper.js
-```
+~~~text
+npm run extract-cookies
+~~~
 
----
+## Estrutura
 
-## ⚙️ Configurações (`config.js`)
+- src/shared/answer.cjs — conversão única de status da API para A/B/C/D/E.
+- src/userscript — módulos do bundle do Tampermonkey.
+- src/cli — scraper de terminal e configuração.
+- scripts — build do userscript, testes e extração de cookies.
+- dist — cópia gerada do userscript.
+- tests/userscript — testes do parser, API, coletor, exportação, timing e bundle.
 
-Você pode ajustar os seguintes parâmetros em `config.js`:
+## Build e testes
 
-- `outputFile`: Nome do arquivo de saída (padrão: `./questoes.json`).
-- `delayBetweenQuestionsMs`: Intervalo em milissegundos entre o clique na próxima questão (padrão: `1500` ms).
-- `maxQuestions`: Quantidade máxima de questões a extrair por execução (`null` para extrair todas).
-
----
-
-## 📄 Estrutura dos Arquivos Criados
-
-- [package.json](file:///c:/Users/israe/OneDrive/Desktop/Projetos/Tecconcursos/package.json) - Dependências do projeto.
-- [config.js](file:///c:/Users/israe/OneDrive/Desktop/Projetos/Tecconcursos/config.js) - Arquivo de opções e parâmetros.
-- [scraper.js](file:///c:/Users/israe/OneDrive/Desktop/Projetos/Tecconcursos/scraper.js) - Script principal de automação com o Playwright.
-- [questoes.json](file:///c:/Users/israe/OneDrive/Desktop/Projetos/Tecconcursos/questoes.json) - Arquivo final com as questões salvas.
-
-## Userscript principal
-
-O fluxo recomendado é o userscript do Tampermonkey, que funciona diretamente na página do caderno.
-
-Ele atende as rotas `/questoes/cadernos/*` e `/questoes/filtrar*`, salva incrementalmente e oferece exportação TXT/JSON.
-
-O intervalo entre cliques é variável, entre 4 e 8 segundos, e pode ser interrompido pelo botão Pausar.
-
-Para gerar o arquivo instalável, execute `npm run build:userscript`.
+~~~text
+npm run build:userscript
+npm test
+~~~

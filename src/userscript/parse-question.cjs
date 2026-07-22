@@ -61,6 +61,13 @@
     return match ? match[1] : "";
   }
 
+  function extractQuestionIndex(documentNode) {
+    var bodyNode = documentNode && documentNode.body;
+    var text = bodyNode ? textOf(bodyNode) : "";
+    var match = text.match(/Quest(?:ão|ao)\s+(\d+)\s+de\b/i);
+    return match ? Number(match[1]) : null;
+  }
+
   function extractQuestionId(rootNode, documentNode) {
     var idNode = first(rootNode, [".id-questao", "[data-testid='question-id']", "a[href*='/questoes/']"]);
     var fromNode = extractId(textOf(idNode));
@@ -142,6 +149,7 @@
       options: extractAlternatives(rootNode),
       url: locationLike && locationLike.href ? String(locationLike.href) : "",
       pageKind: selectors.getPageKind(locationLike),
+      cadernoIndex: extractQuestionIndex(documentNode),
       extractedAt: (now || new Date()).toISOString()
     };
   }
@@ -152,6 +160,7 @@
     normalizeBlock: normalizeBlock,
     extractQuestionId: extractQuestionId,
     extractAlternatives: extractAlternatives,
+    extractQuestionIndex: extractQuestionIndex,
     parseQuestionFromDocument: parseQuestionFromDocument
   };
 });

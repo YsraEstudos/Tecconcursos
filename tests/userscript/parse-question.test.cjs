@@ -31,7 +31,7 @@ test("extrai o contrato real da questão do caderno", () => {
     ".questao-enunciado-alternativas > li": alternatives
   });
   const documentNode = {
-    body: node("conteúdo"),
+    body: node("Questão 18 de 238 conteúdo"),
     location: {
       href: "https://www.tecconcursos.com.br/questoes/cadernos/95080137",
       pathname: "/questoes/cadernos/95080137"
@@ -57,6 +57,7 @@ test("extrai o contrato real da questão do caderno", () => {
     ],
     url: "https://www.tecconcursos.com.br/questoes/cadernos/95080137",
     pageKind: "caderno",
+    cadernoIndex: 18,
     extractedAt: "2026-07-21T12:00:00.000Z"
   });
 });

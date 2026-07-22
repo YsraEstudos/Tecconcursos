@@ -21,6 +21,7 @@
       "Materia: " + safe(question.subject),
       "Assunto: " + safe(question.topic),
       "Orgao: " + safe(question.organization),
+      "Gabarito: " + safe(question.gabarito),
       "",
       "ENUNCIADO:",
       safe(question.statement),
