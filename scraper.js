@@ -1,159 +1,190 @@
-import { chromium } from 'playwright';
 import fs from 'fs';
-import path from 'path';
 import { config } from './config.js';
 
-// Função para ler ou carregar a lista de questões salva em disco
-function loadExistingQuestions(filePath) {
-  if (fs.existsSync(filePath)) {
-    try {
-      const data = fs.readFileSync(filePath, 'utf-8');
-      return JSON.parse(data);
-    } catch (e) {
-      console.warn('⚠️ Erro ao ler arquivo de questões existente. Criando nova lista.', e.message);
+const LETRAS = ['A', 'B', 'C', 'D', 'E'];
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 10000;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function randomDelay() {
+  const min = config.delayMin ?? 3000;
+  const max = config.delayMax ?? 6000;
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function loadExisting(filePath) {
+  try {
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
     }
+  } catch (e) {
+    console.warn(`AVISO: erro ao ler ${filePath} — criando nova lista.`);
   }
   return [];
 }
 
-// Função para salvar a lista de questões em arquivo JSON
-function saveQuestions(filePath, questions) {
+function save(filePath, questions) {
   fs.writeFileSync(filePath, JSON.stringify(questions, null, 2), 'utf-8');
 }
 
-async function runScraper() {
-  console.log('🚀 Iniciando o sistema de extração do Tec Concursos com Playwright...\n');
+async function fetchQuestion(cadernoId, index, cookies) {
+  const url = `https://www.tecconcursos.com.br/api/cadernos/${cadernoId}/questoes/${index}?atualizarCronometro=true`;
 
-  const absoluteUserDataDir = path.resolve(config.userDataDir);
-
-  // Lançar navegador com contexto de dados persistente (mantém login)
-  const context = await chromium.launchPersistentContext(absoluteUserDataDir, {
-    headless: false,
-    viewport: null,
-    args: ['--start-maximized']
+  const res = await fetch(url, {
+    headers: {
+      'Cookie': cookies,
+      'Accept': 'application/json, text/plain, */*',
+      'X-Requested-With': 'XMLHttpRequest',
+      'Referer': `https://www.tecconcursos.com.br/questoes/cadernos/${cadernoId}`,
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Sec-Fetch-Site': 'same-origin',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Dest': 'empty',
+    },
   });
 
-  const page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
-
-  if (config.initialUrl) {
-    console.log(`🌐 Abrindo o site: ${config.initialUrl}`);
-    await page.goto(config.initialUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} ${res.statusText}`);
   }
 
-  console.log('\n===============================================================');
-  console.log('📌 INSTRUÇÕES:');
-  console.log('1. Faça login na sua conta no navegador que abriu (se necessário).');
-  console.log('2. Abra a página do caderno de questões desejado.');
-  console.log('3. Posicione na PRIMEIRA questão que deseja extrair.');
-  console.log('4. Volte neste terminal e pressione ENTER para iniciar!');
+  return res.json();
+}
+
+function mapQuestion(raw, index) {
+  const s = raw.status;
+  const gabarito = s >= 1 && s <= 5 ? LETRAS[s - 1] : '?';
+
+  return {
+    index: index,
+    idQuestao: raw.idQuestao,
+    gabarito,
+    statusCode: s,
+    materia: raw.nomeMateria ?? '',
+    assunto: raw.nomeAssunto ?? '',
+    banca: raw.bancaSigla ?? '',
+    orgao: raw.orgaoNome ?? '',
+    ano: raw.concursoAno ?? null,
+    cargo: raw.cargoSigla ?? '',
+    enunciado: raw.enunciado ?? '',
+    alternativas: (raw.alternativas ?? []).map(a =>
+      a.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim()
+    ),
+    extraidaEm: new Date().toISOString(),
+  };
+}
+
+async function run() {
+  const { cadernoId, outputFile, maxQuestions, logLevel } = config;
+
+  // Cookies podem vir do config.js OU da variável de ambiente TEC_COOKIES
+  const cookies = config.cookies || process.env.TEC_COOKIES || '';
+
+  if (!cadernoId) {
+    console.error('ERRO: informe o cadernoId no config.js');
+    process.exit(1);
+  }
+  if (!cookies) {
+    console.error('ERRO: informe os cookies de sessão no config.js');
+    console.error('Ou use a variável de ambiente TEC_COOKIES');
+    console.error('Leia as instruções no próprio config.js sobre como obter os cookies.');
+    process.exit(1);
+  }
+
+  console.log('===============================================================');
+  console.log('TEC CONCURSOS — Scraper via API (com gabarito)');
+  console.log(`Caderno: ${cadernoId}`);
+  console.log(`Arquivo de saída: ${outputFile}`);
+  console.log(`Delay entre requisições: ${config.delayMin}-${config.delayMax}ms`);
+  console.log(`Limite: ${maxQuestions ?? 'ilimitado'}`);
   console.log('===============================================================\n');
 
-  // Aguardar o usuário pressionar ENTER no terminal
-  await new Promise((resolve) => {
-    process.stdin.once('data', () => resolve());
-  });
+  const questions = loadExisting(outputFile);
+  const savedIds = new Set(questions.map(q => q.idQuestao));
+  let extraidas = 0;
+  let errosConsecutivos = 0;
 
-  console.log('⚡ Extração iniciada! O robô irá extrair e clicar na seta automaticamente...\n');
+  // Descobre ponto de retomada (último índice + 1)
+  let startIndex = 1;
+  if (questions.length > 0) {
+    const maxIndex = Math.max(...questions.map(q => q.index ?? 0));
+    startIndex = maxIndex + 1;
+    console.log(`Retomando do índice ${startIndex} (${questions.length} questões já salvas)\n`);
+  }
 
-  let questions = loadExistingQuestions(config.outputFile);
-  const existingIds = new Set(questions.map(q => q.id));
-
-  let extractedCount = 0;
-  let previousQuestionId = null;
-
-  while (true) {
-    if (config.maxQuestions && extractedCount >= config.maxQuestions) {
-      console.log(`🎯 Limite de ${config.maxQuestions} questões atingido! Finalizando extração...`);
+  for (let i = startIndex; ; i++) {
+    if (maxQuestions && extraidas >= maxQuestions) {
+      console.log(`\nLimite de ${maxQuestions} questões desta execução atingido.`);
       break;
     }
 
-    try {
-      // 1. Extrair os dados da questão atual visível na página
-      const questionData = await page.evaluate(() => {
-        const bodyText = document.body.innerText;
-        
-        // Tentar identificar o código/ID da questão (ex: #3702591)
-        const matchId = bodyText.match(/#(\d{5,8})/);
-        const questionId = matchId ? `#${matchId[1]}` : null;
+    let data;
+    let retries = 0;
 
-        // Tentar capturar metadados do cabeçalho
-        const headerEl = document.querySelector('header, .q-question-header, [data-testid="question-header"]');
-        const headerText = headerEl ? headerEl.innerText.trim() : '';
-
-        // Tentar capturar o enunciado da questão
-        const statementEl = document.querySelector('.q-question-enunciado, .q-enunciado, article, section article');
-        const statementText = statementEl ? statementEl.innerText.trim() : '';
-        const statementHtml = statementEl ? statementEl.innerHTML.trim() : '';
-
-        // Tentar capturar alternativas (A, B, C, D, E)
-        const alternativeElements = Array.from(
-          document.querySelectorAll('.q-options li, .q-opcao, [role="radio"], [data-testid="option"], .q-alternativas > div')
-        );
-        const options = alternativeElements.map(el => el.innerText.trim()).filter(Boolean);
-
-        return {
-          id: questionId || `Q_${Date.now()}`,
-          header: headerText,
-          statementText: statementText,
-          statementHtml: statementHtml,
-          options: options,
-          url: window.location.href,
-          extractedAt: new Date().toISOString()
-        };
-      });
-
-      // Salvar se for uma questão nova
-      if (questionData.id !== previousQuestionId) {
-        if (!existingIds.has(questionData.id)) {
-          questions.push(questionData);
-          existingIds.add(questionData.id);
-          extractedCount++;
-          saveQuestions(config.outputFile, questions);
-          console.log(`✅ [${extractedCount}] Questão salva: ${questionData.id}`);
-        } else {
-          console.log(`ℹ️ Questão ${questionData.id} já foi salva anteriormente.`);
-        }
-        previousQuestionId = questionData.id;
-      }
-
-      // 2. Tentar localizar o botão "Próxima questão" e clicar
-      // Suporta vários locators para máxima compatibilidade
-      const locators = [
-        page.getByLabel('Próxima questão'),
-        page.locator('button[aria-label="Próxima questão"]'),
-        page.locator('[title="Próxima questão"]'),
-        page.locator('a[aria-label="Próxima questão"]'),
-        page.locator('button:has-text("Próxima")'),
-        page.locator('.q-btn-next, .q-next-question, [aria-label*="Próxima"]')
-      ];
-
-      let clicked = false;
-      for (const loc of locators) {
-        if (await loc.count() > 0 && await loc.first().isVisible()) {
-          await loc.first().scrollIntoViewIfNeeded().catch(() => {});
-          await loc.first().click();
-          clicked = true;
-          break;
+    // Tenta com retry
+    while (retries < MAX_RETRIES) {
+      try {
+        data = await fetchQuestion(cadernoId, i, cookies);
+        break;
+      } catch (err) {
+        retries++;
+        console.error(`[${i}] Erro (tentativa ${retries}/${MAX_RETRIES}): ${err.message}`);
+        if (retries < MAX_RETRIES) {
+          await sleep(RETRY_DELAY_MS);
         }
       }
+    }
 
-      if (!clicked) {
-        console.log('⚠️ Botão "Próxima questão" não encontrado ou fim do caderno.');
-        console.log('Caso ainda haja questões, navegue até ela e pressione Enter para continuar.');
+    if (!data) {
+      errosConsecutivos++;
+      if (errosConsecutivos >= 3) {
+        console.error('Muitos erros consecutivos. Encerrando.');
         break;
       }
-
-      // Esperar delay entre requisições para carregamento da nova questão
-      await page.waitForTimeout(config.delayBetweenQuestionsMs);
-
-    } catch (err) {
-      console.error('❌ Erro no ciclo de extração:', err.message);
-      console.log('Reesperando 3 segundos antes de tentar a próxima...');
-      await page.waitForTimeout(3000);
+      continue;
     }
+
+    errosConsecutivos = 0;
+    const q = data.questao;
+
+    // Se a resposta não tem dados válidos, chegamos ao fim do caderno
+    if (!q || !q.idQuestao || q.alternativas === undefined) {
+      console.log(`[${i}] Sem dados — fim do caderno ou questão indisponível.`);
+      if (logLevel !== 'resumo') {
+        console.log('   Resposta:', JSON.stringify(data).substring(0, 200));
+      }
+      break;
+    }
+
+    // Pula se já foi salva
+    if (savedIds.has(q.idQuestao)) {
+      if (logLevel !== 'resumo') {
+        console.log(`[${i}] Questão ${q.idQuestao} já salva — pulando.`);
+      }
+      continue;
+    }
+
+    const entry = mapQuestion(q, i);
+    questions.push(entry);
+    savedIds.add(q.idQuestao);
+    extraidas++;
+    save(outputFile, questions);
+
+    console.log(`[${i}] #${q.idQuestao} | Gab: ${entry.gabarito} | ${q.nomeMateria ?? '?'} | ${q.nomeAssunto ?? '?'}`);
+
+    // Delay aleatório
+    const delay = randomDelay();
+    if (logLevel !== 'resumo') {
+      console.log(`   ⏳ ${(delay / 1000).toFixed(1)}s...`);
+    }
+    await sleep(delay);
   }
 
-  console.log(`\n🎉 Concluído! Total de ${questions.length} questões armazenadas em: ${config.outputFile}`);
+  console.log(`\nFINALIZADO. Total: ${questions.length} questões em ${outputFile}`);
 }
 
-runScraper();
+run();

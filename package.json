@@ -1,14 +1,16 @@
 {
   "name": "tecconcursos-scraper",
-  "version": "1.0.0",
-  "description": "Sistema de extração sequencial de questões usando Playwright",
+  "version": "2.0.0",
+  "description": "Sistema de extração de questões com gabarito via API (sem automação de navegador)",
   "main": "scraper.js",
   "type": "module",
   "scripts": {
     "start": "node scraper.js",
-    "build:userscript": "node scripts/build-userscript.cjs",
-    "test": "node scripts/run-tests.cjs",
-    "test:userscript": "node scripts/run-tests.cjs"
+    "extract-cookies": "node scripts/extract-cookies.cjs",
+    "build:userscript": "node scripts/build-userscript.cjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "playwright": "^1.50.0"

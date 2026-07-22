@@ -1,4 +1,5 @@
 node_modules/
 user_data/
 questoes.json
+cookies.txt
 .DS_Store

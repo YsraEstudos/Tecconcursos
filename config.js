@@ -1,16 +1,42 @@
 export const config = {
-  // Arquivo onde as questões serão salvas em tempo real
+  // ============================================================
+  // CONFIGURAÇÃO DO SCRAPER VIA API
+  // (extrai questões + gabarito sem automação de navegador)
+  // ============================================================
+
+  // ID do caderno de questões a extrair
+  // Ex: se a URL é https://www.tecconcursos.com.br/questoes/cadernos/90463745
+  // então o cadernoId é 90463745
+  cadernoId: 90463745,
+
+  // COMO OBTER OS COOKIES:
+  // 1. Faça login no site no seu navegador
+  // 2. Abra DevTools (F12) → Application/Storage → Cookies → tecconcursos.com.br
+  // 3. Copie todos os nomes e valores
+  // OU execute: npm run extract-cookies
+  //    (extrai automaticamente dos dados do Playwright, se você já fez login nele)
+  //
+  // Formato: "nome1=valor1; nome2=valor2; ..."
+  // ⚠️ NÃO compartilhe este arquivo após preencher os cookies!
+  cookies: '',
+
+  // Arquivo onde as questões serão salvas
   outputFile: './questoes.json',
 
-  // Pasta onde a sessão do seu navegador ficará salva (login persistente)
-  userDataDir: './user_data',
+  // Tempo entre requisições (em milissegundos) - intervalo aleatório
+  delayMin: 3000,   // mínimo 3 segundos
+  delayMax: 6000,   // máximo 6 segundos
 
-  // Tempo de espera (em milissegundos) entre a extração e o clique na próxima questão
-  delayBetweenQuestionsMs: 1500,
-
-  // Limite máximo de questões a extrair nesta execução (null para ilimitado)
+  // Limite máximo de questões nesta execução (null = ilimitado)
   maxQuestions: null,
 
-  // URL inicial (opcional - se null, você pode navegar livremente na tela aberta)
-  initialUrl: 'https://www.tecconcursos.com.br'
+  // Modo de relatório: 'todas' = exibe cada questão, 'resumo' = só progresso
+  logLevel: 'todas',
+
+  // ============================================================
+  // CONFIGURAÇÃO LEGADA (Playwright - não recomendada)
+  // ============================================================
+
+  // Pasta com sessão do Playwright (usado apenas pelo extract-cookies)
+  userDataDir: './user_data'
 };
