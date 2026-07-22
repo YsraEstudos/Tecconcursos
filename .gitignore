@@ -1,0 +1,4 @@
+node_modules/
+user_data/
+questoes.json
+.DS_Store

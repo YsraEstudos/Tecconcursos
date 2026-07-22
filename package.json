@@ -1,0 +1,13 @@
+{
+  "name": "tecconcursos-scraper",
+  "version": "1.0.0",
+  "description": "Sistema de extração sequencial de questões usando Playwright",
+  "main": "scraper.js",
+  "type": "module",
+  "scripts": {
+    "start": "node scraper.js"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0"
+  }
+}
