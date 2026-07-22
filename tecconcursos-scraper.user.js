@@ -1,27 +1,54 @@
 // ==UserScript==
-// @name         TecConcursos - Coletor de Questões Automático
+// @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      1.1.1
-// @description  Extrai questões sequencialmente no Tec Concursos clicando na seta de próxima questão.
+// @version      1.2.0
+// @description  Extrai questões sequencialmente no Tec Concursos usando bibliotecas modernas (SweetAlert2 e Toastify).
 // @author       Antigravity
 // @match        https://www.tecconcursos.com.br/*
 // @match        https://tecconcursos.com.br/*
-// @updateURL    https://ysraestudos.github.io/Tecconcursos/tecconcursos-scraper.user.js
-// @downloadURL  https://ysraestudos.github.io/Tecconcursos/tecconcursos-scraper.user.js
+// @require      https://cdn.jsdelivr.net/npm/sweetalert2@11
+// @require      https://cdn.jsdelivr.net/npm/toastify-js
+// @resource     TOASTIFY_CSS https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @grant        GM_download
-// @grant        GM_setClipboard
+// @grant        GM_addStyle
+// @grant        GM_getResourceText
 // ==UserScript==
 
 (function () {
   'use strict';
 
+  // Injetar CSS do Toastify
+  const toastCss = `
+    .toastify {
+      padding: 12px 20px;
+      color: #ffffff;
+      display: inline-block;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      border-radius: 8px;
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+      font-weight: bold;
+    }
+  `;
+  GM_addStyle(toastCss);
+
   let isRunning = false;
   let timerId = null;
   let lastExtractedId = null;
 
-  // Carregar dados salvos
+  function notify(msg, bg = '#10B981') {
+    if (typeof Toastify === 'function') {
+      Toastify({
+        text: msg,
+        duration: 2000,
+        gravity: "top",
+        position: "right",
+        style: { background: bg }
+      }).showToast();
+    }
+  }
+
   function getQuestions() {
     try {
       return JSON.parse(GM_getValue('tec_questions_data', '[]'));
@@ -30,31 +57,24 @@
     }
   }
 
-  // Salvar no armazenamento do Tampermonkey
   function saveQuestions(list) {
     GM_setValue('tec_questions_data', JSON.stringify(list));
     updateWidgetUI();
   }
 
-  // Capturar dados da questão visível na tela
   function parseQuestion() {
     const pageText = document.body.innerText;
-    
-    // Tenta encontrar o ID da questão (ex: #3702591)
     const matchId = pageText.match(/#(\d{5,8})/);
     const id = matchId ? `#${matchId[1]}` : null;
 
     if (!id) return null;
 
-    // Enunciado
     const statementEl = document.querySelector('.q-question-enunciado, .q-enunciado, article, [data-testid="question-text"]');
     const statement = statementEl ? statementEl.innerText.trim() : '';
 
-    // Alternativas (A, B, C, D, E)
     const optionEls = Array.from(document.querySelectorAll('.q-options li, .q-opcao, [role="radio"], [data-testid="option"]'));
     const options = optionEls.map(el => el.innerText.trim()).filter(Boolean);
 
-    // Cabeçalho / Matéria / Banca / Ano
     const headerEl = document.querySelector('header, .q-question-header');
     const header = headerEl ? headerEl.innerText.trim() : '';
 
@@ -68,13 +88,10 @@
     };
   }
 
-  // Localizar o botão de "Próxima questão"
   function findNextButton() {
-    // 1. Tentar por aria-label ou title
     let btn = document.querySelector('[aria-label="Próxima questão"], [title="Próxima questão"], [aria-label*="Próxima"]');
     if (btn) return btn;
 
-    // 2. Busca genérica por texto ou atributos em elementos clicáveis
     const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"], span[role="button"]'));
     return candidates.find(el => {
       const label = (el.getAttribute('aria-label') || '').toLowerCase();
@@ -84,7 +101,6 @@
     });
   }
 
-  // Loop de execução
   function processStep() {
     if (!isRunning) return;
 
@@ -95,7 +111,7 @@
       if (!list.some(item => item.id === q.id)) {
         list.push(q);
         saveQuestions(list);
-        console.log(`[TecScraper] Questão ${q.id} capturada.`);
+        notify(`✅ Questão ${q.id} capturada!`, '#10B981');
       }
       lastExtractedId = q.id;
     }
@@ -104,11 +120,17 @@
 
     if (nextBtn) {
       nextBtn.click();
-      // Aguarda 1.8s para a nova questão carregar
       timerId = setTimeout(processStep, 1800);
     } else {
       stop();
-      alert('⚠️ Fim da lista ou botão "Próxima questão" não encontrado.');
+      if (typeof Swal === 'function') {
+        Swal.fire({
+          icon: 'info',
+          title: 'Extração Concluída!',
+          text: 'Fim do caderno ou botão "Próxima questão" não encontrado.',
+          confirmButtonColor: '#3B82F6'
+        });
+      }
     }
   }
 
@@ -116,6 +138,7 @@
     if (isRunning) return;
     isRunning = true;
     updateWidgetUI();
+    notify('🚀 Extração iniciada!', '#3B82F6');
     processStep();
   }
 
@@ -123,10 +146,16 @@
     isRunning = false;
     if (timerId) clearTimeout(timerId);
     updateWidgetUI();
+    notify('⏸️ Extração pausada.', '#EF4444');
   }
 
   function exportJSON() {
-    const data = JSON.stringify(getQuestions(), null, 2);
+    const list = getQuestions();
+    if (list.length === 0) {
+      Swal.fire('Aviso', 'Nenhuma questão salva para exportar.', 'warning');
+      return;
+    }
+    const data = JSON.stringify(list, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -134,16 +163,28 @@
     a.download = `questoes_tecconcursos_${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    notify('💾 Arquivo JSON baixado!', '#3B82F6');
   }
 
   function clearAll() {
-    if (confirm('Deseja apagar todas as questões salvas no Tampermonkey?')) {
-      saveQuestions([]);
-      lastExtractedId = null;
-    }
+    Swal.fire({
+      title: 'Limpar banco de questões?',
+      text: 'Essa ação apagará todas as questões salvas no Tampermonkey!',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#EF4444',
+      cancelButtonColor: '#6B7280',
+      confirmButtonText: 'Sim, apagar tudo',
+      cancelButtonText: 'Cancelar'
+    }).then((result) => {
+      if (result.isConfirmed) {
+        saveQuestions([]);
+        lastExtractedId = null;
+        Swal.fire('Limpo!', 'O banco de questões foi resetado.', 'success');
+      }
+    });
   }
 
-  // Painel Flutuante na tela do TecConcursos
   function renderWidget() {
     if (document.getElementById('tec-floating-widget')) return;
 
@@ -162,12 +203,13 @@
       box-shadow: 0 10px 25px rgba(0,0,0,0.5);
       font-family: system-ui, -apple-system, sans-serif;
       font-size: 13px;
-      min-width: 220px;
+      min-width: 230px;
+      cursor: move;
     `;
 
     div.innerHTML = `
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-        <strong style="color: #60A5FA; font-size: 14px;">🎯 Tec Scraper</strong>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; pointer-events: none;">
+        <strong style="color: #60A5FA; font-size: 14px;">🎯 Tec Scraper Pro</strong>
         <span id="tec-badge" style="background: #1F2937; padding: 3px 8px; border-radius: 12px; font-weight: bold; color: #10B981;">0 salvas</span>
       </div>
       <div style="display: flex; gap: 8px; margin-bottom: 8px;">
@@ -181,6 +223,25 @@
     `;
 
     document.body.appendChild(div);
+
+    // Torna o painel arrastável (Draggable)
+    let isDragging = false, offsetX = 0, offsetY = 0;
+    div.addEventListener('mousedown', (e) => {
+      if (e.target.tagName === 'BUTTON') return;
+      isDragging = true;
+      offsetX = e.clientX - div.offsetLeft;
+      offsetY = e.clientY - div.offsetTop;
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      div.style.left = `${e.clientX - offsetX}px`;
+      div.style.top = `${e.clientY - offsetY}px`;
+      div.style.bottom = 'auto';
+      div.style.right = 'auto';
+    });
+
+    document.addEventListener('mouseup', () => { isDragging = false; });
 
     document.getElementById('tec-btn-start').onclick = start;
     document.getElementById('tec-btn-stop').onclick = stop;
@@ -207,7 +268,6 @@
     }
   }
 
-  // Inicializar widget assim que a página carregar
   if (document.readyState === 'complete') {
     renderWidget();
   } else {
