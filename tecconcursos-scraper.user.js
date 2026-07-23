@@ -1,19 +1,22 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      2.3.0
-// @description  Coleta questões, lê numeroAlternativaCorreta pela API, exporta TXT/JSON e aguarda 4-8 segundos aleatórios entre cliques.
+// @version      2.5.11
+// @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.
 // @author       Codex
 // @match        https://www.tecconcursos.com.br/questoes/cadernos/*
 // @match        https://tecconcursos.com.br/questoes/cadernos/*
 // @match        https://www.tecconcursos.com.br/questoes/filtrar*
 // @match        https://tecconcursos.com.br/questoes/filtrar*
+// @match        https://www.tecconcursos.com.br/questoes/pastas*
+// @match        https://tecconcursos.com.br/questoes/pastas*
 // @updateURL    https://raw.githubusercontent.com/YsraEstudos/Tecconcursos/main/tecconcursos-scraper.user.js
 // @downloadURL  https://raw.githubusercontent.com/YsraEstudos/Tecconcursos/main/tecconcursos-scraper.user.js
-// @run-at       document-idle
+// @run-at       document-start
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        unsafeWindow
 // @noframes
 // ==/UserScript==
 
@@ -207,7 +210,8 @@
 
   var PAGE_PATTERNS = {
     caderno: /\/questoes\/cadernos(?:\/|$)/i,
-    filtro: /\/questoes\/filtrar(?:\/|$)/i
+    filtro: /\/questoes\/filtrar(?:\/|$)/i,
+    pasta: /\/questoes\/pastas(?:\/|$)/i
   };
 
   var QUESTION_ROOT_SELECTORS = [
@@ -244,6 +248,7 @@
     var path = getPath(locationLike);
     if (PAGE_PATTERNS.caderno.test(path)) return "caderno";
     if (PAGE_PATTERNS.filtro.test(path)) return "filtro";
+    if (PAGE_PATTERNS.pasta.test(path)) return "pasta";
     return "unknown";
   }
 
@@ -641,6 +646,2232 @@
   }
 
   return { createStorage: createStorage };
+});
+
+// ---- plan.cjs ----
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.plan = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  var DEFAULT_BANKS = [
+    "FCC", "Fundatec", "Vunesp", "Cesgranrio", "FGV", "Legalle",
+    "Fundação La Salle", "Instituto AOCP", "Objetiva"
+  ];
+  var DEFAULT_YEARS = [2023, 2020, 2022, 2018, 2025, 2021, 2017, 2024, 2019, 2026, 2016];
+
+  function text(value) {
+    return String(value == null ? "" : value).replace(/\u00a0/g, " ").trim();
+  }
+
+  function unique(values) {
+    return (Array.isArray(values) ? values : []).filter(function (value, index, list) {
+      return value !== "" && value != null && list.indexOf(value) === index;
+    });
+  }
+
+  function normalizeMatter(item, group) {
+    var source = item || {};
+    var subjects = Array.isArray(source.subjects) ? source.subjects : [];
+    var ids = unique((source.subjectIds || []).concat(subjects.map(function (subject) {
+      return subject && subject.id != null ? String(subject.id) : "";
+    })).map(String));
+    var paths = unique((source.subjectPaths || []).concat(subjects.map(function (subject) {
+      return subject && subject.path ? subject.path : "";
+    })).map(text));
+    return {
+      code: text(source.code),
+      title: text(source.title),
+      group: text(source.group || group || "Sem grupo"),
+      subjectIds: ids,
+      subjectPaths: paths
+    };
+  }
+
+  function normalizePlan(value) {
+    var source = value || {};
+    var matters = (Array.isArray(source.matters) ? source.matters : []).map(function (matter) {
+      return normalizeMatter(matter, matter && matter.group);
+    }).filter(function (matter) {
+      return matter.code && matter.title;
+    });
+    return {
+      version: 1,
+      name: text(source.name || "Plano TecConcursos"),
+      banks: unique((source.banks || DEFAULT_BANKS).map(text)),
+      years: unique((source.years || DEFAULT_YEARS).map(function (year) { return Number(year); })).filter(function (year) {
+        return Number.isFinite(year) && year >= 1900 && year <= 2100;
+      }),
+      removeCancelled: source.removeCancelled !== false,
+      removeOutdated: source.removeOutdated !== false,
+      matters: matters
+    };
+  }
+
+  function parseConsolidatedMarkdown(markdown) {
+    var currentGroup = "Sem grupo";
+    var currentMatter = null;
+    var matters = [];
+    String(markdown || "").replace(/\r/g, "").split("\n").forEach(function (line) {
+      var clean = text(line);
+      var groupMatch = clean.match(/^(?:#{1,6}\s*)?(\d+\.\s+.+|Práticas complementares)$/i);
+      if (groupMatch && !/^MAT-|^PRAT-/i.test(clean)) {
+        currentGroup = clean.replace(/^#{1,6}\s*/, "");
+        return;
+      }
+      var matterMatch = clean.match(/^(MAT-\d{3}|PRAT-\d{2})\s*[—–-]\s*(.+)$/i);
+      if (matterMatch) {
+        currentMatter = {
+          code: matterMatch[1].toUpperCase(),
+          title: text(matterMatch[2]),
+          group: currentGroup,
+          subjectIds: [],
+          subjectPaths: []
+        };
+        matters.push(currentMatter);
+        return;
+      }
+      var subjectMatch = clean.match(/^TecConcursos:\s*(\d+)\s*[—–-]\s*(.+)$/i);
+      if (subjectMatch && currentMatter) {
+        currentMatter.subjectIds.push(subjectMatch[1]);
+        currentMatter.subjectPaths.push(text(subjectMatch[2]));
+      }
+    });
+    return normalizePlan({ matters: matters });
+  }
+
+  function parsePlanText(value) {
+    var raw = text(value);
+    if (!raw) return normalizePlan({});
+    if (/^[\[{]/.test(raw)) {
+      try {
+        return normalizePlan(JSON.parse(raw));
+      } catch (error) {
+        throw new Error("O JSON do plano não é válido: " + error.message);
+      }
+    }
+    var plan = parseConsolidatedMarkdown(raw);
+    if (!plan.matters.length) {
+      throw new Error("Não encontrei códigos MAT-xxx ou PRAT-xx no arquivo do plano.");
+    }
+    return plan;
+  }
+
+  function displayName(matter) {
+    var item = normalizeMatter(matter);
+    return item.code + " — " + item.title;
+  }
+
+  function lastPathSegment(path) {
+    var parts = text(path).split(">").map(text).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "";
+  }
+
+  return {
+    DEFAULT_BANKS: DEFAULT_BANKS,
+    DEFAULT_YEARS: DEFAULT_YEARS,
+    normalizePlan: normalizePlan,
+    parseConsolidatedMarkdown: parseConsolidatedMarkdown,
+    parsePlanText: parsePlanText,
+    normalizeMatter: normalizeMatter,
+    displayName: displayName,
+    lastPathSegment: lastPathSegment
+  };
+});
+
+// ---- automation-lock.cjs ----
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.automationLock = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  var LOCK_KEY = "tecconcursos_caderno_automation_lock_v1";
+  var OWNER_SESSION_KEY = "tecconcursos_caderno_automation_owner_v1";
+  var SYNC_CHANNEL_NAME = "tecconcursos_caderno_automation_sync_v1";
+  var LOCK_LEASE_MS = 30000;
+  var LOCK_HEARTBEAT_MS = 5000;
+
+  function clean(value) {
+    return String(value == null ? "" : value).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  function uniqueId(prefix) {
+    var random = Math.random().toString(36).slice(2, 10);
+    return String(prefix || "id") + "-" + Date.now().toString(36) + "-" + random;
+  }
+
+  function executionOwnerId(rootNode) {
+    if (rootNode && rootNode.__tecConcursosAutomationOwnerId) return rootNode.__tecConcursosAutomationOwnerId;
+    var session = null;
+    try { session = rootNode && rootNode.sessionStorage; } catch (_) {}
+    if (session && typeof session.getItem === "function") {
+      try {
+        var current = session.getItem(OWNER_SESSION_KEY);
+        if (current) {
+          if (rootNode) rootNode.__tecConcursosAutomationOwnerId = current;
+          return current;
+        }
+        var created = uniqueId("tab");
+        session.setItem(OWNER_SESSION_KEY, created);
+        if (rootNode) rootNode.__tecConcursosAutomationOwnerId = created;
+        return created;
+      } catch (_) {}
+    }
+    var fallback = uniqueId("tab");
+    if (rootNode) rootNode.__tecConcursosAutomationOwnerId = fallback;
+    return fallback;
+  }
+
+  function claimKey(lock) {
+    if (!lock || typeof lock !== "object") return "";
+    if (lock.claimId) return String(lock.claimId);
+    return String(lock.acquiredAt || 0) + "|" + String(lock.ownerId || "") + "|" + String(lock.runId || "");
+  }
+
+  function compareClaims(left, right) {
+    var leftKey = claimKey(left);
+    var rightKey = claimKey(right);
+    if (leftKey === rightKey) return 0;
+    return leftKey > rightKey ? 1 : -1;
+  }
+
+  function sameClaim(left, right) {
+    return Boolean(left && right && left.ownerId === right.ownerId && left.runId === right.runId && claimKey(left) === claimKey(right));
+  }
+
+  function parseLock(value) {
+    if (!value) return null;
+    if (typeof value === "object") return value;
+    try {
+      var parsed = JSON.parse(String(value));
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function createLockManager(options) {
+    var config = options || {};
+    var rootNode = config.root;
+    var storage = config.storage;
+    var readState = typeof config.readState === "function" ? config.readState : function () { return null; };
+    var ownerId = clean(config.ownerId || executionOwnerId(rootNode));
+    var heartbeatTimer = null;
+    var channel = null;
+    var remoteConflict = null;
+    var localClaim = null;
+
+    function broadcast(message) {
+      if (!channel || typeof channel.postMessage !== "function") return;
+      try {
+        channel.postMessage(Object.assign({ version: 1, source: ownerId, sentAt: Date.now() }, message || {}));
+      } catch (_) {}
+    }
+
+    function readLock() {
+      var lock = storage.read(LOCK_KEY, null);
+      return lock && typeof lock === "object" ? lock : null;
+    }
+
+    function lockIsActive(lock, now) {
+      return Boolean(lock && Number(lock.expiresAt) > (Number(now) || Date.now()));
+    }
+
+    function claimWasLost(lock) {
+      return Boolean(lock && remoteConflict && lockIsActive(remoteConflict) && remoteConflict.ownerId !== ownerId && compareClaims(remoteConflict, lock) > 0);
+    }
+
+    function ownsLock(lock, state) {
+      return Boolean(lock && state && lock.ownerId === ownerId && lock.runId === state.runId && lockIsActive(lock) && !claimWasLost(lock));
+    }
+
+    function effectiveLock(lock) {
+      var current = lock || readLock();
+      if (remoteConflict && lockIsActive(remoteConflict) && (!current || compareClaims(remoteConflict, current) >= 0 || current.ownerId === ownerId && claimWasLost(current))) return remoteConflict;
+      return current;
+    }
+
+    function lockStatus(lock) {
+      var current = effectiveLock(lock);
+      if (!current || !lockIsActive(current)) return "";
+      return "Outra aba está executando esta automação (aba " + String(current.ownerId || "desconhecida") + ").";
+    }
+
+    function lockError(lock) {
+      var error = new Error(lockStatus(lock) || "A automação não possui uma aba proprietária ativa.");
+      error.code = "AUTOMATION_LOCKED";
+      error.lock = lock || null;
+      return error;
+    }
+
+    function reconcileRemoteLock(remoteLock) {
+      if (!remoteLock || remoteLock.ownerId === ownerId || !lockIsActive(remoteLock)) return;
+      var current = readLock();
+      var local = current && current.ownerId === ownerId ? current : localClaim;
+      if (local && local.ownerId === ownerId && compareClaims(local, remoteLock) > 0) {
+        remoteConflict = null;
+        if (!sameClaim(current, local)) {
+          storage.write(LOCK_KEY, local);
+          broadcast({ type: "lock-reassert", lock: local });
+        }
+        return;
+      }
+      remoteConflict = remoteLock;
+      stopHeartbeat();
+    }
+
+    function handleSyncMessage(event) {
+      var message = event && event.data ? event.data : event;
+      if (!message || message.source === ownerId) return;
+      if (message.type === "lock-claim" || message.type === "lock-renew" || message.type === "lock-reassert") {
+        reconcileRemoteLock(parseLock(message.lock));
+      } else if (message.type === "lock-release" && remoteConflict && sameClaim(remoteConflict, parseLock(message.lock))) {
+        remoteConflict = null;
+      }
+    }
+
+    function handleStorageEvent(event) {
+      if (!event || event.key !== LOCK_KEY) return;
+      if (!event.newValue) {
+        remoteConflict = null;
+        return;
+      }
+      reconcileRemoteLock(parseLock(event.newValue));
+    }
+
+    function startSynchronization() {
+      if (rootNode && typeof rootNode.addEventListener === "function") {
+        try { rootNode.addEventListener("storage", handleStorageEvent); } catch (_) {}
+      }
+      var BroadcastChannelCtor = rootNode && rootNode.BroadcastChannel;
+      if (typeof BroadcastChannelCtor !== "function") return;
+      try {
+        channel = new BroadcastChannelCtor(SYNC_CHANNEL_NAME);
+        if (typeof channel.addEventListener === "function") channel.addEventListener("message", handleSyncMessage);
+        else channel.onmessage = handleSyncMessage;
+      } catch (_) {
+        channel = null;
+      }
+    }
+
+    function stopSynchronization() {
+      if (rootNode && typeof rootNode.removeEventListener === "function") {
+        try { rootNode.removeEventListener("storage", handleStorageEvent); } catch (_) {}
+      }
+      if (channel && typeof channel.close === "function") {
+        try { channel.close(); } catch (_) {}
+      }
+      channel = null;
+    }
+
+    function stopHeartbeat() {
+      if (heartbeatTimer != null) {
+        var clear = rootNode && rootNode.clearInterval || (typeof clearInterval === "function" ? clearInterval : null);
+        if (clear) clear(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+    }
+
+    function renewLease(state) {
+      if (!state || !state.runId) return true;
+      var current = readLock();
+      if (!ownsLock(current, state)) return false;
+      var now = Date.now();
+      var next = Object.assign({}, current, {
+        ownerId: ownerId,
+        runId: state.runId,
+        heartbeatAt: now,
+        expiresAt: now + LOCK_LEASE_MS,
+        href: String(rootNode && rootNode.location && rootNode.location.href || "")
+      });
+      storage.write(LOCK_KEY, next);
+      localClaim = next;
+      broadcast({ type: "lock-renew", lock: next });
+      var confirmed = readLock();
+      if (!ownsLock(confirmed, state)) return false;
+      state.lockOwnerId = ownerId;
+      state.leaseExpiresAt = Number(confirmed.expiresAt) || next.expiresAt;
+      return true;
+    }
+
+    function startHeartbeat(state) {
+      if (heartbeatTimer != null) return;
+      var set = rootNode && rootNode.setInterval || (typeof setInterval === "function" ? setInterval : null);
+      if (!set) return;
+      heartbeatTimer = set(function () {
+        var current = readState();
+        if (!current.running || !current.runId || current.runId !== state.runId || !renewLease(current)) stopHeartbeat();
+      }, LOCK_HEARTBEAT_MS);
+      if (heartbeatTimer && typeof heartbeatTimer.unref === "function") heartbeatTimer.unref();
+    }
+
+    function acquireLease(state, force) {
+      if (!state || typeof state !== "object") throw new Error("Não há estado de automação para assumir.");
+      if (!state.runId) state.runId = uniqueId("run");
+      var current = readLock();
+      if (!force && lockIsActive(current) && current.ownerId !== ownerId) return { acquired: false, lock: current };
+      if (!force && remoteConflict && lockIsActive(remoteConflict) && remoteConflict.ownerId !== ownerId) return { acquired: false, lock: remoteConflict };
+      var now = Date.now();
+      var candidate = {
+        version: 1,
+        claimId: uniqueId("claim"),
+        ownerId: ownerId,
+        runId: state.runId,
+        acquiredAt: current && current.ownerId === ownerId ? Number(current.acquiredAt) || now : now,
+        heartbeatAt: now,
+        expiresAt: now + LOCK_LEASE_MS,
+        href: String(rootNode && rootNode.location && rootNode.location.href || "")
+      };
+      localClaim = candidate;
+      remoteConflict = null;
+      storage.write(LOCK_KEY, candidate);
+      broadcast({ type: "lock-claim", lock: candidate });
+      var confirmed = readLock();
+      if (!confirmed || confirmed.ownerId !== ownerId || confirmed.runId !== state.runId || !lockIsActive(confirmed) || claimWasLost(candidate)) {
+        return { acquired: false, lock: confirmed || current };
+      }
+      state.ownerId = ownerId;
+      state.lockOwnerId = ownerId;
+      state.leaseExpiresAt = Number(confirmed.expiresAt) || candidate.expiresAt;
+      startHeartbeat(state);
+      return { acquired: true, lock: confirmed };
+    }
+
+    function ensureLease(state) {
+      if (!state || !state.runId) return true;
+      if (renewLease(state)) return true;
+      var acquired = acquireLease(state, false);
+      if (acquired.acquired) return true;
+      throw lockError(acquired.lock);
+    }
+
+    function releaseLease(state) {
+      stopHeartbeat();
+      var current = readLock();
+      if (!state || !ownsLock(current, state)) return false;
+      if (typeof storage.remove === "function") storage.remove(LOCK_KEY);
+      else storage.write(LOCK_KEY, Object.assign({}, current, { expiresAt: 0, releasedAt: Date.now() }));
+      broadcast({ type: "lock-release", lock: current });
+      localClaim = null;
+      remoteConflict = null;
+      return true;
+    }
+
+    function lockInfo(state) {
+      var lock = effectiveLock(readLock());
+      return {
+        key: LOCK_KEY,
+        ownerId: ownerId,
+        ownsLock: ownsLock(lock, state),
+        active: lockIsActive(lock),
+        lockedByOtherTab: Boolean(lockIsActive(lock) && lock.ownerId !== ownerId),
+        runId: lock && lock.runId || null,
+        lockOwnerId: lock && lock.ownerId || null,
+        acquiredAt: lock && lock.acquiredAt || null,
+        heartbeatAt: lock && lock.heartbeatAt || null,
+        expiresAt: lock && lock.expiresAt || null,
+        href: lock && lock.href || null
+      };
+    }
+
+    startSynchronization();
+
+    return {
+      ownerId: ownerId,
+      createRunId: function () { return uniqueId("run"); },
+      readLock: readLock,
+      ownsLock: ownsLock,
+      lockStatus: lockStatus,
+      lockError: lockError,
+      acquireLease: acquireLease,
+      ensureLease: ensureLease,
+      releaseLease: releaseLease,
+      lockInfo: lockInfo,
+      stopHeartbeat: stopHeartbeat,
+      destroy: function () { stopHeartbeat(); stopSynchronization(); }
+    };
+  }
+
+  return {
+    LOCK_KEY: LOCK_KEY,
+    OWNER_SESSION_KEY: OWNER_SESSION_KEY,
+    SYNC_CHANNEL_NAME: SYNC_CHANNEL_NAME,
+    LOCK_LEASE_MS: LOCK_LEASE_MS,
+    LOCK_HEARTBEAT_MS: LOCK_HEARTBEAT_MS,
+    executionOwnerId: executionOwnerId,
+    createLockManager: createLockManager
+  };
+});
+
+// ---- automation-dom.cjs ----
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.automationDom = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  function clean(value) {
+    return String(value == null ? "" : value).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  function sameText(left, right) {
+    return clean(left).toLocaleLowerCase("pt-BR") === clean(right).toLocaleLowerCase("pt-BR");
+  }
+
+  function isVisible(element) {
+    var current = element;
+    while (current && current.nodeType === 1) {
+      if (current.disabled || current.hidden) return false;
+      var classes = String(current.className || "");
+      if (/(^|\s)ng-hide(\s|$)/.test(classes)) return false;
+      if (current.style && (current.style.display === "none" || current.style.visibility === "hidden")) return false;
+      current = current.parentElement;
+    }
+    return Boolean(element);
+  }
+
+  function waitFor(documentNode, predicate, timeoutMs, message) {
+    var timeout = Number(timeoutMs) || 10000;
+    return new Promise(function (resolve, reject) {
+      var started = Date.now();
+      function tick() {
+        var result = predicate();
+        if (result) return resolve(result);
+        if (Date.now() - started >= timeout) return reject(new Error(message || "O TecConcursos não carregou o controle esperado a tempo."));
+        setTimeout(tick, 120);
+      }
+      tick();
+    });
+  }
+
+  function setInputValue(input, value) {
+    if (!input) return false;
+    var descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value");
+    if (descriptor && typeof descriptor.set === "function") descriptor.set.call(input, String(value));
+    else input.value = String(value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+
+  function clickElement(documentNode, element) {
+    if (!element) return false;
+    try {
+      if (typeof element.click === "function") {
+        element.click();
+        return true;
+      }
+    } catch (_) {}
+    try {
+      var pageWindow = documentNode && documentNode.defaultView;
+      if (typeof unsafeWindow !== "undefined") pageWindow = unsafeWindow;
+      var angular = pageWindow && pageWindow.angular;
+      if (angular && typeof angular.element === "function") {
+        var angularElement = angular.element(element);
+        if (angularElement && typeof angularElement.triggerHandler === "function") {
+          angularElement.triggerHandler("click");
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function commitInputValue(input, value) {
+    if (!setInputValue(input, value)) return false;
+    input.dispatchEvent(new Event("blur", { bubbles: false }));
+    return true;
+  }
+
+  function fillCadernoName(documentNode, input, title) {
+    var expected = String(title == null ? "" : title);
+    if (!input || !expected.trim()) return false;
+    if (!clickElement(documentNode, input)) return false;
+    try {
+      if (typeof input.focus === "function") input.focus();
+    } catch (_) {}
+    if (!commitInputValue(input, expected)) return false;
+    return String(input.value == null ? "" : input.value) === expected;
+  }
+
+  function foundQuestionCount(documentNode) {
+    if (!documentNode || typeof documentNode.querySelectorAll !== "function") return 0;
+    var node = Array.from(documentNode.querySelectorAll("strong")).filter(isVisible).find(function (candidate) {
+      var text = clean(candidate.innerText || candidate.textContent);
+      var parentText = clean(candidate.parentElement && (candidate.parentElement.innerText || candidate.parentElement.textContent));
+      return /^\d[\d.\s]*$/.test(text) && /questões encontradas/i.test(parentText);
+    });
+    if (!node) return 0;
+    return Number(clean(node.innerText || node.textContent).replace(/[^\d]/g, "")) || 0;
+  }
+
+  function clickText(documentNode, selector, label) {
+    var target = Array.from(documentNode.querySelectorAll(selector)).filter(isVisible).find(function (node) {
+      return sameText(node.innerText || node.textContent, label);
+    });
+    if (target) clickElement(documentNode, target);
+    return Boolean(target);
+  }
+
+  function invokeAngularTreeItem(documentNode, item) {
+    var pageWindow = documentNode && documentNode.defaultView;
+    if (typeof unsafeWindow !== "undefined") pageWindow = unsafeWindow;
+    var angular = pageWindow && pageWindow.angular;
+    if (!angular || typeof angular.element !== "function") return false;
+    var clickable = item.querySelector(".arvore-item-conteudo") || item;
+    var angularElement = angular.element(clickable);
+    var scope = angularElement && ((typeof angularElement.isolateScope === "function" && angularElement.isolateScope()) || (typeof angularElement.scope === "function" && angularElement.scope()));
+    if (!scope || !scope.vm || typeof scope.vm.notificarClick !== "function") return false;
+    var notify = function () { scope.vm.notificarClick(); };
+    if (scope.$root && scope.$root.$$phase) notify();
+    else if (typeof scope.$apply === "function") scope.$apply(notify);
+    else notify();
+    return true;
+  }
+
+  function pageDiagnosticSnapshot(rootNode, documentNode) {
+    var questionNodes = documentNode && typeof documentNode.querySelectorAll === "function" ? Array.from(documentNode.querySelectorAll(".questao")) : [];
+    var firstQuestion = questionNodes[0];
+    var lastQuestion = questionNodes[questionNodes.length - 1];
+    var bodyRaw = documentNode && documentNode.body ? String(documentNode.body.innerText || documentNode.body.textContent || "") : "";
+    var bodyText = clean(bodyRaw.slice(0, 2400)).slice(0, 800);
+    var contentNode = documentNode && typeof documentNode.querySelector === "function" ? documentNode.querySelector("#prova-conteudo") : null;
+    var loadingNodes = documentNode && typeof documentNode.querySelectorAll === "function" ? Array.from(documentNode.querySelectorAll(".ajax-loading, #ajax-loading, .loading, .carregando")) : [];
+    var pageWindow = rootNode && rootNode.window ? rootNode.window : rootNode;
+    var scriptSources = documentNode && typeof documentNode.querySelectorAll === "function" ? Array.from(documentNode.querySelectorAll("script[src]")).map(function (node) { return String(node.src || ""); }).slice(-8) : [];
+    var controls = ["#configurar-impressao", "#questaoInicialInput", "#numeroQuestoesInput", "#numeroQuestoes", "#confirmar-button", "#prova-conteudo", "#questaoInicial"];
+    var controlState = {};
+    controls.forEach(function (selector) {
+      var node = documentNode && typeof documentNode.querySelector === "function" ? documentNode.querySelector(selector) : null;
+      controlState[selector] = node ? {
+        present: true,
+        value: node.value == null ? null : String(node.value),
+        disabled: Boolean(node.disabled),
+        text: clean(node.innerText || node.textContent).slice(0, 160)
+      } : { present: false };
+    });
+    return {
+      href: String(rootNode && rootNode.location && rootNode.location.href || ""),
+      pathname: String(rootNode && rootNode.location && rootNode.location.pathname || ""),
+      readyState: String(documentNode && documentNode.readyState || ""),
+      title: clean(documentNode && documentNode.title),
+      questionNodeCount: questionNodes.length,
+      contentChildCount: contentNode && contentNode.children ? contentNode.children.length : null,
+      contentHtmlLength: contentNode && contentNode.innerHTML != null ? String(contentNode.innerHTML).length : null,
+      loadingMarkerCount: loadingNodes.length,
+      scriptCount: documentNode && typeof documentNode.querySelectorAll === "function" ? documentNode.querySelectorAll("script").length : null,
+      scriptSources: scriptSources,
+      printFunctionType: pageWindow && typeof pageWindow.print === "function" ? "function" : typeof (pageWindow && pageWindow.print),
+      firstQuestionText: clean(firstQuestion && (firstQuestion.innerText || firstQuestion.textContent)).slice(0, 240),
+      lastQuestionText: clean(lastQuestion && (lastQuestion.innerText || lastQuestion.textContent)).slice(0, 240),
+      controls: controlState,
+      bodySample: bodyText
+    };
+  }
+
+  function compactDiagnosticValue(value) {
+    var text;
+    try { text = JSON.stringify(value == null ? {} : value); } catch (_) { text = String(value); }
+    return text.length > 1800 ? text.slice(0, 1800) + "…" : text;
+  }
+
+  return {
+    clean: clean,
+    sameText: sameText,
+    isVisible: isVisible,
+    waitFor: waitFor,
+    setInputValue: setInputValue,
+    clickElement: clickElement,
+    commitInputValue: commitInputValue,
+    fillCadernoName: fillCadernoName,
+    foundQuestionCount: foundQuestionCount,
+    clickText: clickText,
+    invokeAngularTreeItem: invokeAngularTreeItem,
+    pageDiagnosticSnapshot: pageDiagnosticSnapshot,
+    compactDiagnosticValue: compactDiagnosticValue
+  };
+});
+
+// ---- library.cjs ----
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.library = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  var LIBRARY_KEY = "tecconcursos_export_library_v1";
+
+  function clean(value) {
+    return String(value == null ? "" : value).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  function safeFilename(value) {
+    return clean(value).replace(/[<>:"/\\|?*\x00-\x1F]/g, "-").replace(/\.+$/g, "").slice(0, 100) || "arquivo";
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, function (character) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character];
+    });
+  }
+
+  function sanitizeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "")
+      .replace(/<\/?(?:iframe|object|embed)\b[^>]*>/gi, "")
+      .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+      .replace(/\s(?:href|src)\s*=\s*(["'])\s*javascript:[\s\S]*?\1/gi, "");
+  }
+
+  function parseHeader(value) {
+    var header = clean(value);
+    var pieces = header.split("/").map(clean).filter(Boolean);
+    var first = pieces.shift() || "";
+    var firstSplit = first.split(/\s+-\s+/);
+    var bank = clean(firstSplit.shift());
+    var vacancy = clean(firstSplit.join(" - "));
+    var year = null;
+    var firstYearMatch = vacancy.match(/\b(19|20)\d{2}\b/);
+    if (firstYearMatch) {
+      year = Number(firstYearMatch[0]);
+      vacancy = clean(vacancy.replace(firstYearMatch[0], "").replace(/^\s*-\s*|\s*-\s*$/g, ""));
+    }
+    var last = pieces.length ? pieces[pieces.length - 1] : "";
+    var yearMatch = last.match(/\b(19|20)\d{2}\b/);
+    if (yearMatch && year == null) year = Number(yearMatch[0]);
+    if (yearMatch) pieces[pieces.length - 1] = clean(last.replace(yearMatch[0], "").replace(/^\s*-\s*|\s*-\s*$/g, ""));
+    pieces = pieces.filter(Boolean);
+    return {
+      raw: header,
+      bank: bank,
+      vacancy: vacancy,
+      organization: pieces.shift() || "",
+      role: pieces.join(" / "),
+      year: year
+    };
+  }
+
+  function optionData(node) {
+    var raw = clean(node && (node.innerText || node.textContent));
+    var match = raw.match(/^([a-e])\)\s*/i);
+    return {
+      letter: match ? match[1].toUpperCase() : "",
+      text: raw.replace(/^([a-e])\)\s*/i, ""),
+      html: sanitizeHtml(node && node.innerHTML)
+    };
+  }
+
+  function parsePrintedQuestion(node, index) {
+    var source = node || {};
+    var link = source.querySelector ? source.querySelector("a[href*='/questoes/']") : null;
+    var url = link ? String(link.href || link.getAttribute("href") || "") : "";
+    var idMatch = url.match(/\/questoes\/(\d+)/);
+    var info = source.querySelector ? source.querySelector(".cabecalho .informacoes") : null;
+    var blocks = info ? Array.from(info.children || []) : [];
+    var headerBlock = blocks.filter(function (block) {
+      return !/(linkQuestao|classificacao)/.test(String(block.className || ""));
+    })[0];
+    var classification = source.querySelector ? source.querySelector(".classificacao") : null;
+    var classificationText = clean(classification && (classification.innerText || classification.textContent));
+    var classificationParts = classificationText.split(/\s+-\s+/);
+    var answerNode = source.querySelector ? source.querySelector(".gabarito, .resposta-correta") : null;
+    var metadata = parseHeader(headerBlock && (headerBlock.innerText || headerBlock.textContent));
+    var statement = source.querySelector ? source.querySelector(".enunciado") : null;
+    var numberNode = source.querySelector ? source.querySelector(".enunciado strong") : null;
+    var numberMatch = clean(numberNode && (numberNode.innerText || numberNode.textContent)).match(/^(\d+)\)/);
+    var alternatives = source.querySelectorAll ? Array.from(source.querySelectorAll(".alternativa")).map(optionData) : [];
+    return {
+      id: idMatch ? idMatch[1] : "print-" + String(index + 1),
+      number: numberMatch ? Number(numberMatch[1]) : index + 1,
+      url: url,
+      header: metadata.raw,
+      bank: metadata.bank,
+      year: metadata.year,
+      vacancy: metadata.vacancy,
+      organization: metadata.organization,
+      role: metadata.role,
+      subject: clean(classificationParts.shift()),
+      topic: clean(classificationParts.join(" - ")),
+      statement: clean(statement && (statement.innerText || statement.textContent)),
+      statementHtml: sanitizeHtml(statement && statement.innerHTML),
+      options: alternatives,
+      answer: clean(answerNode && (answerNode.innerText || answerNode.textContent))
+    };
+  }
+
+  function extractPrintedQuestions(documentNode) {
+    if (!documentNode || typeof documentNode.querySelectorAll !== "function") return [];
+    return Array.from(documentNode.querySelectorAll(".questao")).map(parsePrintedQuestion);
+  }
+
+  function cadernoIdFromLocation(locationLike) {
+    var source = typeof locationLike === "string" ? locationLike : locationLike && locationLike.href;
+    var match = String(source || "").match(/\/cadernos\/(\d+)/i);
+    return match ? match[1] : "";
+  }
+
+  function emptyLibrary() {
+    return { version: 1, entries: {} };
+  }
+
+  function normalizeLibrary(value) {
+    var library = value && typeof value === "object" && !Array.isArray(value) ? value : emptyLibrary();
+    if (!library.entries || typeof library.entries !== "object") library.entries = {};
+    return library;
+  }
+
+  function questionKey(question) {
+    return String(question && (question.id || question.url || question.number) || "");
+  }
+
+  function createLibrary(storage) {
+    function read() {
+      return normalizeLibrary(storage.read(LIBRARY_KEY, emptyLibrary()));
+    }
+    function write(library) {
+      storage.write(LIBRARY_KEY, library);
+    }
+    function list() {
+      return Object.keys(read().entries).map(function (key) {
+        var entry = read().entries[key];
+        return Object.assign({}, entry, { questions: undefined });
+      }).sort(function (left, right) {
+        return String(left.group || "").localeCompare(String(right.group || ""), "pt-BR") || String(left.title || "").localeCompare(String(right.title || ""), "pt-BR");
+      });
+    }
+    function get(id) {
+      return read().entries[String(id)] || null;
+    }
+    function appendPart(info, questions) {
+      var library = read();
+      var key = String(info.libraryId || info.cadernoId || info.code || "");
+      if (!key) throw new Error("Não foi possível identificar o caderno para a biblioteca.");
+      var old = library.entries[key] || { id: key, questions: [], parts: [] };
+      var existing = {};
+      (old.questions || []).forEach(function (question) { existing[questionKey(question)] = true; });
+      var added = (Array.isArray(questions) ? questions : []).filter(function (question) {
+        var qKey = questionKey(question);
+        if (!qKey || existing[qKey]) return false;
+        existing[qKey] = true;
+        return true;
+      });
+      var previousPart = (old.parts || []).find(function (part) { return part.start === info.start; });
+      var parts = (old.parts || []).filter(function (part) { return part.start !== info.start; });
+      parts.push({
+        start: Number(info.start) || 1,
+        count: added.length || Number(previousPart && previousPart.count) || 0,
+        savedAt: new Date().toISOString()
+      });
+      library.entries[key] = Object.assign({}, old, info, {
+        id: key,
+        questions: (old.questions || []).concat(added),
+        parts: parts.sort(function (left, right) { return left.start - right.start; }),
+        updatedAt: new Date().toISOString()
+      });
+      write(library);
+      return library.entries[key];
+    }
+    function remove(id) {
+      var library = read();
+      delete library.entries[String(id)];
+      write(library);
+    }
+    function clear() { write(emptyLibrary()); }
+    return { list: list, get: get, appendPart: appendPart, remove: remove, clear: clear };
+  }
+
+  function csvValue(value) {
+    return '"' + String(value == null ? "" : value).replace(/"/g, '""') + '"';
+  }
+
+  function buildCsv(entry) {
+    var columns = ["Número", "Caderno", "Código", "Banca", "Ano", "Vaga", "Órgão", "Cargo", "Matéria", "Assunto", "Questão ID", "URL", "Enunciado", "Alternativa A", "Alternativa B", "Alternativa C", "Alternativa D", "Alternativa E", "Gabarito"];
+    var lines = [columns.map(csvValue).join(";")];
+    (entry.questions || []).forEach(function (question, index) {
+      var alternatives = {};
+      (question.options || []).forEach(function (option) { alternatives[option.letter] = option.text; });
+      lines.push([
+        question.number || index + 1, entry.title, entry.code, question.bank, question.year,
+        question.vacancy, question.organization, question.role, question.subject, question.topic,
+        question.id, question.url, question.statement, alternatives.A, alternatives.B,
+        alternatives.C, alternatives.D, alternatives.E, question.answer
+      ].map(csvValue).join(";"));
+    });
+    return "\uFEFF" + lines.join("\r\n");
+  }
+
+  function xmlEscape(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, function (character) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[character];
+    });
+  }
+
+  function columnName(index) {
+    var value = index + 1;
+    var output = "";
+    while (value > 0) {
+      var remainder = (value - 1) % 26;
+      output = String.fromCharCode(65 + remainder) + output;
+      value = Math.floor((value - 1) / 26);
+    }
+    return output;
+  }
+
+  function excelRows(entry) {
+    var headers = ["Número", "Caderno", "Código", "Banca", "Ano", "Vaga", "Órgão", "Cargo", "Matéria", "Assunto", "Questão ID", "URL", "Enunciado", "Alternativa A", "Alternativa B", "Alternativa C", "Alternativa D", "Alternativa E", "Gabarito"];
+    var rows = [headers];
+    (entry.questions || []).forEach(function (question, index) {
+      var alternatives = {};
+      (question.options || []).forEach(function (option) { alternatives[option.letter] = option.text; });
+      rows.push([question.number || index + 1, entry.title, entry.code, question.bank, question.year, question.vacancy, question.organization, question.role, question.subject, question.topic, question.id, question.url, question.statement, alternatives.A, alternatives.B, alternatives.C, alternatives.D, alternatives.E, question.answer]);
+    });
+    return rows;
+  }
+
+  function crc32(bytes) {
+    var table = crc32.table || (crc32.table = Array.from({ length: 256 }, function (_, index) {
+      var value = index;
+      for (var bit = 0; bit < 8; bit += 1) value = (value & 1) ? (0xEDB88320 ^ (value >>> 1)) : (value >>> 1);
+      return value >>> 0;
+    }));
+    var crc = 0 ^ -1;
+    for (var i = 0; i < bytes.length; i += 1) crc = (crc >>> 8) ^ table[(crc ^ bytes[i]) & 0xFF];
+    return (crc ^ -1) >>> 0;
+  }
+
+  function u16(value) { return [value & 255, (value >>> 8) & 255]; }
+  function u32(value) { return [value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255]; }
+
+  function zipStore(files) {
+    var encoder = new TextEncoder();
+    var chunks = [];
+    var directory = [];
+    var offset = 0;
+    files.forEach(function (file) {
+      var name = encoder.encode(file.name);
+      var content = encoder.encode(file.content);
+      var crc = crc32(content);
+      var local = [0x50, 0x4B, 0x03, 0x04].concat(u16(20), u16(0), u16(0), u16(0), u16(0), u32(crc), u32(content.length), u32(content.length), u16(name.length), u16(0), Array.from(name), Array.from(content));
+      chunks.push(local);
+      directory.push([0x50, 0x4B, 0x01, 0x02].concat(u16(20), u16(20), u16(0), u16(0), u16(0), u16(0), u32(crc), u32(content.length), u32(content.length), u16(name.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset), Array.from(name)));
+      offset += local.length;
+    });
+    var directorySize = directory.reduce(function (total, entry) { return total + entry.length; }, 0);
+    var output = chunks.concat(directory);
+    output.push([0x50, 0x4B, 0x05, 0x06].concat(u16(0), u16(0), u16(files.length), u16(files.length), u32(directorySize), u32(offset), u16(0)));
+    return new Uint8Array(output.flat());
+  }
+
+  function buildXlsxBlob(entry) {
+    var rows = excelRows(entry);
+    var worksheet = rows.map(function (row, rowIndex) {
+      var cells = row.map(function (value, columnIndex) {
+        var reference = columnName(columnIndex) + String(rowIndex + 1);
+        return '<c r="' + reference + '" t="inlineStr"><is><t xml:space="preserve">' + xmlEscape(value) + "</t></is></c>";
+      }).join("");
+      return '<row r="' + String(rowIndex + 1) + '">' + cells + "</row>";
+    }).join("");
+    var lastCell = columnName(rows[0].length - 1) + String(rows.length);
+    var files = [
+      { name: "[Content_Types].xml", content: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>' },
+      { name: "_rels/.rels", content: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+      { name: "xl/workbook.xml", content: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Questões" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+      { name: "xl/_rels/workbook.xml.rels", content: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' },
+      { name: "xl/worksheets/sheet1.xml", content: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetData>' + worksheet + '</sheetData><autoFilter ref="A1:' + lastCell + '"/></worksheet>' }
+    ];
+    return new Blob([zipStore(files)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  }
+
+  function outputBaseName(entry) {
+    return safeFilename((entry.group || "Sem grupo") + " - " + (entry.title || entry.code || "Caderno"));
+  }
+
+  function downloadBlob(documentNode, filename, blob) {
+    var url = URL.createObjectURL(blob);
+    var anchor = documentNode.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    documentNode.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+  }
+
+  function jsJson(value) {
+    return JSON.stringify(value).replace(/<\/script/gi, "<\\/script");
+  }
+
+  function buildInteractiveHtml(entry) {
+    var data = Object.assign({}, entry, { questions: entry.questions || [] });
+    var initial = { attempts: [{ id: "tentativa-1", createdAt: new Date().toISOString(), answers: {}, eliminated: {} }], activeAttempt: 0 };
+    var fileName = safeFilename((entry.title || entry.code || "caderno") + "-interativo.html");
+    var runtime = String.raw`(function () {
+  "use strict";
+  var data = JSON.parse(document.getElementById("tec-caderno-data").textContent);
+  var fallback = JSON.parse(document.getElementById("tec-caderno-state").textContent);
+  var key = "tecconcursos-html-v1:" + data.id;
+  var state = fallback;
+  var index = 0;
+  var downloadName = ${jsJson(fileName)};
+  function read() { try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch (_) { return fallback; } }
+  function write() {
+    document.getElementById("tec-caderno-state").textContent = JSON.stringify(state);
+    try { localStorage.setItem(key, JSON.stringify(state)); document.getElementById("status").textContent = "Histórico salvo localmente"; }
+    catch (_) { document.getElementById("status").textContent = "Histórico apenas nesta sessão; baixe o HTML para preservar"; }
+  }
+  function currentAttempt() { return state.attempts[state.activeAttempt] || state.attempts[0]; }
+  function escapeValue(value) { return String(value == null ? "" : value).replace(/[&<>"']/g, function (char) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]; }); }
+  function visibleQuestions() {
+    return data.questions.filter(function (question) {
+      return (!document.getElementById("bank").value || question.bank === document.getElementById("bank").value) && (!document.getElementById("year").value || String(question.year || "") === document.getElementById("year").value) && (!document.getElementById("vacancy").value || question.vacancy === document.getElementById("vacancy").value);
+    });
+  }
+  function render() {
+    var visible = visibleQuestions();
+    var question = visible[index];
+    document.getElementById("title").textContent = data.title || data.code || "Caderno";
+    document.getElementById("summary").textContent = (data.group || "Sem grupo") + " · " + visible.length + " questão(ões) filtrada(s) de " + data.questions.length;
+    if (!question) { document.getElementById("question").innerHTML = '<div class="empty">Nenhuma questão para esse filtro.</div>'; return; }
+    var attempt = currentAttempt();
+    var meta = [question.bank, question.year, question.organization, question.role, question.vacancy, question.subject, question.topic].filter(Boolean).map(function (value) { return '<span class="tag">' + escapeValue(value) + "</span>"; }).join("");
+    var body = question.statementHtml || ("<p>" + escapeValue(question.statement) + "</p>");
+    var alternatives = (question.options || []).map(function (option) {
+      var selected = attempt.answers[question.id] === option.letter;
+      var eliminated = !!(attempt.eliminated[question.id] || {})[option.letter];
+      return '<button class="option ' + (selected ? "selected " : "") + (eliminated ? "eliminated " : "") + '" data-letter="' + escapeValue(option.letter) + '">' + (option.html || ("<strong>" + escapeValue(option.letter) + ")</strong> " + escapeValue(option.text))) + "</button>";
+    }).join("");
+    document.getElementById("question").innerHTML = '<div class="meta">' + meta + '</div><div class="statement">' + body + "</div><div>" + alternatives + '</div><div class="hint">Clique para marcar uma resposta. Dê duplo clique para eliminar ou restaurar uma alternativa.</div>';
+    document.getElementById("status").textContent = "Questão " + (index + 1) + " de " + visible.length;
+    Array.from(document.querySelectorAll(".option")).forEach(function (button) {
+      var clickTimer = null;
+      button.addEventListener("click", function () {
+        if (clickTimer) clearTimeout(clickTimer);
+        clickTimer = setTimeout(function () { attempt.answers[question.id] = button.dataset.letter; write(); render(); }, 220);
+      });
+      button.addEventListener("dblclick", function (event) { event.preventDefault(); if (clickTimer) clearTimeout(clickTimer); attempt.eliminated[question.id] = attempt.eliminated[question.id] || {}; if (attempt.eliminated[question.id][button.dataset.letter]) delete attempt.eliminated[question.id][button.dataset.letter]; else attempt.eliminated[question.id][button.dataset.letter] = true; write(); render(); });
+    });
+  }
+  function resetIndex() { index = 0; render(); }
+  function fillFilters() {
+    Array.from(new Set(data.questions.map(function (question) { return question.bank; }).filter(Boolean))).sort().forEach(function (value) { document.getElementById("bank").insertAdjacentHTML("beforeend", "<option>" + escapeValue(value) + "</option>"); });
+    Array.from(new Set(data.questions.map(function (question) { return question.year; }).filter(Boolean))).sort(function (left, right) { return right - left; }).forEach(function (value) { document.getElementById("year").insertAdjacentHTML("beforeend", "<option>" + escapeValue(value) + "</option>"); });
+    Array.from(new Set(data.questions.map(function (question) { return question.vacancy; }).filter(Boolean))).sort().forEach(function (value) { document.getElementById("vacancy").insertAdjacentHTML("beforeend", "<option>" + escapeValue(value) + "</option>"); });
+  }
+  function ensureVacancyControl() {
+    var existing = document.getElementById("vacancy");
+    if (existing) return existing;
+    var year = document.getElementById("year");
+    var controls = year && year.parentElement && year.parentElement.parentElement;
+    if (!controls) return null;
+    var label = document.createElement("label");
+    label.textContent = "Vaga ";
+    var select = document.createElement("select");
+    select.id = "vacancy";
+    select.innerHTML = '<option value="">Todas</option>';
+    label.appendChild(select);
+    controls.appendChild(label);
+    return select;
+  }
+  state = read();
+  ensureVacancyControl();
+  document.getElementById("prev").onclick = function () { index = Math.max(0, index - 1); render(); };
+  document.getElementById("next").onclick = function () { index = Math.min(visibleQuestions().length - 1, index + 1); render(); };
+  document.getElementById("go").onclick = function () { var number = Number(document.getElementById("jump").value); if (number > 0) { index = Math.min(visibleQuestions().length - 1, number - 1); render(); } };
+  document.getElementById("bank").onchange = resetIndex;
+  document.getElementById("year").onchange = resetIndex;
+  document.getElementById("vacancy").onchange = resetIndex;
+  document.getElementById("newAttempt").onclick = function () { state.attempts.push({ id: "tentativa-" + (state.attempts.length + 1), createdAt: new Date().toISOString(), answers: {}, eliminated: {} }); state.activeAttempt = state.attempts.length - 1; write(); render(); };
+  document.getElementById("saveHtml").onclick = function () { write(); var blob = new Blob([document.documentElement.outerHTML], { type: "text/html;charset=utf-8" }); var url = URL.createObjectURL(blob); var anchor = document.createElement("a"); anchor.href = url; anchor.download = downloadName; anchor.click(); setTimeout(function () { URL.revokeObjectURL(url); }, 60000); };
+  fillFilters();
+  render();
+})();`;
+    return [
+      "<!doctype html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>", escapeHtml(entry.title || "Caderno"),
+      "</title><style>body{margin:0;background:#f3f4f6;color:#182230;font:16px system-ui,-apple-system,Segoe UI,sans-serif}.top{position:sticky;top:0;z-index:2;background:#102a43;color:#fff;padding:14px 20px;box-shadow:0 2px 8px #0003}.top h1{font-size:18px;margin:0 0 7px}.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.controls button,.controls input,.controls select{border:1px solid #aab8c8;border-radius:7px;padding:7px 9px;font:inherit}.controls button{background:#fff;color:#102a43;cursor:pointer;font-weight:700}.summary{font-size:13px;opacity:.9}.main{max-width:900px;margin:24px auto;padding:0 16px}.card{background:#fff;border-radius:12px;box-shadow:0 3px 14px #0b1f3317;padding:22px}.meta{display:flex;gap:6px;flex-wrap:wrap;color:#52606d;font-size:14px;margin-bottom:14px}.tag{background:#e6f6ff;color:#075985;padding:4px 7px;border-radius:999px}.statement{line-height:1.6}.option{display:block;width:100%;text-align:left;margin:10px 0;padding:12px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font:inherit}.option:hover{border-color:#2563eb}.option.selected{border:2px solid #2563eb;background:#eff6ff}.option.eliminated{text-decoration:line-through;opacity:.45;background:#f8fafc}.hint{margin-top:12px;color:#64748b;font-size:13px}.status{margin-left:auto;font-size:13px}.empty{padding:30px;text-align:center;color:#64748b}</style></head><body><header class=\"top\"><h1 id=\"title\"></h1><div class=\"controls\"><button id=\"prev\">← Anterior</button><button id=\"next\">Próxima →</button><label>Ir para <input id=\"jump\" type=\"number\" min=\"1\" style=\"width:78px\"></label><button id=\"go\">Ir</button><label>Banca <select id=\"bank\"><option value=\"\">Todas</option></select></label><label>Ano <select id=\"year\"><option value=\"\">Todos</option></select></label><button id=\"newAttempt\">Nova tentativa</button><button id=\"saveHtml\">Baixar HTML com histórico</button><span class=\"status\" id=\"status\"></span></div><div class=\"summary\" id=\"summary\"></div></header><main class=\"main\"><article class=\"card\" id=\"question\"></article></main><script id=\"tec-caderno-data\" type=\"application/json\">", jsJson(data), "</script><script id=\"tec-caderno-state\" type=\"application/json\">", jsJson(initial), "</script><script>", runtime, "</script></body></html>"
+    ].join("");
+  }
+
+  return {
+    LIBRARY_KEY: LIBRARY_KEY,
+    safeFilename: safeFilename,
+    parseHeader: parseHeader,
+    parsePrintedQuestion: parsePrintedQuestion,
+    extractPrintedQuestions: extractPrintedQuestions,
+    cadernoIdFromLocation: cadernoIdFromLocation,
+    createLibrary: createLibrary,
+    buildCsv: buildCsv,
+    buildXlsxBlob: buildXlsxBlob,
+    buildInteractiveHtml: buildInteractiveHtml,
+    outputBaseName: outputBaseName,
+    downloadBlob: downloadBlob
+  };
+});
+
+// ---- automation-state.cjs ----
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.automationState = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  var STATE_KEY = "tecconcursos_caderno_automation_v1";
+  var PLAN_KEY = "tecconcursos_caderno_plan_v1";
+  var FOLDER_KEY = "tecconcursos_default_folder_id_v1";
+  var MAX_PER_PRINT = 200;
+  var STALE_AFTER_MS = 90000;
+  var OUTPUT_WAIT_TIMEOUT_MS = 60000;
+
+  function defaultState() {
+    return { version: 1, running: false, creation: null, export: null };
+  }
+
+  function normalizeState(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : defaultState();
+  }
+
+  function markProgress(state, patch) {
+    var previous = state.progress && typeof state.progress === "object" ? state.progress : {};
+    var next = Object.assign({}, previous, patch || {});
+    next.updatedAt = new Date().toISOString();
+    var history = Array.isArray(previous.history) ? previous.history.slice(-19) : [];
+    history.push({ at: next.updatedAt, phase: String(next.phase || ""), message: String(next.message || "") });
+    next.history = history;
+    state.progress = next;
+    return next;
+  }
+
+  function appendEvent(state, eventName, details, url, compact) {
+    var progress = state.progress && typeof state.progress === "object" ? state.progress : {};
+    var events = Array.isArray(progress.events) ? progress.events.slice(-299) : [];
+    events.push({
+      at: new Date().toISOString(),
+      event: String(eventName || "event"),
+      phase: String(progress.phase || ""),
+      url: String(url || ""),
+      details: typeof compact === "function" ? compact(details) : details
+    });
+    progress.events = events;
+    state.progress = progress;
+    return state;
+  }
+
+  return {
+    STATE_KEY: STATE_KEY,
+    PLAN_KEY: PLAN_KEY,
+    FOLDER_KEY: FOLDER_KEY,
+    MAX_PER_PRINT: MAX_PER_PRINT,
+    STALE_AFTER_MS: STALE_AFTER_MS,
+    OUTPUT_WAIT_TIMEOUT_MS: OUTPUT_WAIT_TIMEOUT_MS,
+    defaultState: defaultState,
+    normalizeState: normalizeState,
+    markProgress: markProgress,
+    appendEvent: appendEvent
+  };
+});
+
+// ---- automation-filters.cjs ----
+(function (root, factory) {
+  var api = factory(
+    typeof module !== "undefined" && module.exports ? {
+      dom: require("./automation-dom.cjs"),
+      plan: require("./plan.cjs")
+    } : (function (modules) {
+      return { dom: modules.automationDom, plan: modules.plan };
+    })(root.TecConcursosModules)
+  );
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.automationFilters = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function (deps) {
+  "use strict";
+
+  var clean = deps.dom.clean;
+  var isVisible = deps.dom.isVisible;
+  var waitFor = deps.dom.waitFor;
+  var setInputValue = deps.dom.setInputValue;
+  var clickElement = deps.dom.clickElement;
+  var clickText = deps.dom.clickText;
+  var invokeAngularTreeItem = deps.dom.invokeAngularTreeItem;
+
+  function currentPath(rootNode) {
+    return String(rootNode.location && rootNode.location.pathname || "");
+  }
+
+  function isFilterPage(rootNode) { return /\/questoes\/filtrar/i.test(currentPath(rootNode)); }
+  function isPrintPage(rootNode) { return /\/questoes\/cadernos\/\d+\/imprimir/i.test(currentPath(rootNode)); }
+  function isCadernoPage(rootNode) { return /\/questoes\/cadernos\/\d+/i.test(currentPath(rootNode)) && !isPrintPage(rootNode); }
+
+  function folderIdFromLocation(rootNode) {
+    try { return new URL(rootNode.location.href).searchParams.get("idPasta") || ""; } catch (_) { return ""; }
+  }
+
+  function filterUrl(rootNode, folderId) {
+    var origin = rootNode.location && rootNode.location.origin || "https://www.tecconcursos.com.br";
+    return origin + "/questoes/filtrar?idPasta=" + encodeURIComponent(folderId || folderIdFromLocation(rootNode));
+  }
+
+  function cadernoUrl(rootNode, id) {
+    var origin = rootNode.location && rootNode.location.origin || "https://www.tecconcursos.com.br";
+    return origin + "/questoes/cadernos/" + encodeURIComponent(id);
+  }
+
+  function filterHeadingLabel(heading) {
+    return {
+      "Matéria e assunto": "Matérias e assuntos",
+      "Banca": "Bancas",
+      "Órgão e cargo": "Órgãos e cargos",
+      "Ano": "Anos"
+    }[heading] || heading;
+  }
+
+  function searchBoxMatchesHeading(box, heading) {
+    var expectedHeading = filterHeadingLabel(heading);
+    var declaredTitle = clean(box && box.getAttribute && box.getAttribute("titulo"));
+    if (declaredTitle === expectedHeading) return true;
+    var visibleTitle = clean((box && (box.querySelector(".gerador-buscador-cabecalho") || box).innerText) || "");
+    return visibleTitle.indexOf(expectedHeading) === 0;
+  }
+
+  function treeItemMatches(node, expected) {
+    var normalizedExpected = clean(expected).toLocaleLowerCase("pt-BR");
+    var title = clean(node && node.getAttribute && node.getAttribute("title"));
+    var text = clean(node && (node.innerText || node.textContent));
+    return [title, text].some(function (candidate) {
+      return candidate.toLocaleLowerCase("pt-BR") === normalizedExpected;
+    });
+  }
+
+  function hasSelectedTreeItem(box, expected) {
+    return Array.from(box.querySelectorAll(".arvore-item")).filter(isVisible).some(function (node) {
+      return node.classList.contains("arvore-item-selecionado") && treeItemMatches(node, expected);
+    });
+  }
+
+  function treeItemClickTarget(item) {
+    // O texto da árvore é apenas um rótulo. No TecConcursos, o ng-click fica
+    // no contêiner pai; clicar diretamente no span pode não disparar a seleção.
+    return item.querySelector(".arvore-item-conteudo") || item.querySelector(".arvore-item-nome") || item;
+  }
+
+  function activeFilterCount(documentNode) {
+    var panel = Array.from(documentNode.querySelectorAll(".gerador-filtrador")).filter(isVisible).find(function (node) {
+      return /Filtros ativos:/i.test(node.innerText || node.textContent || "");
+    });
+    var text = clean(panel && (panel.innerText || panel.textContent));
+    var match = text.match(/Filtros ativos:\s*(\d+)/i);
+    return match ? Number(match[1]) : 0;
+  }
+
+  async function clearActiveFilters(documentNode) {
+    if (!activeFilterCount(documentNode)) return;
+    var clear = Array.from(documentNode.querySelectorAll(".gerador-filtrador-cabecalho-limpar")).filter(isVisible).find(function (node) {
+      return /Limpar/i.test(node.innerText || node.textContent || "");
+    });
+    if (!clear) throw new Error("Há filtros ativos, mas não encontrei o controle para limpá-los.");
+    clickElement(documentNode, clear);
+    await waitFor(documentNode, function () { return activeFilterCount(documentNode) === 0; }, 5000, "O TecConcursos não confirmou a limpeza dos filtros.");
+  }
+
+  function visibleSearchBox(documentNode, heading) {
+    return Array.from(documentNode.querySelectorAll(".gerador-buscador")).filter(isVisible).find(function (box) {
+      return searchBoxMatchesHeading(box, heading);
+    }) || null;
+  }
+
+  function searchCandidates(heading, value) {
+    if (heading !== "Banca") return [value];
+    var aliases = {
+      "FCC": ["FCC", "Fundação Carlos Chagas"],
+      "Fundação La Salle": ["Fundação La Salle", "La Salle"],
+      "Instituto AOCP": ["Instituto AOCP", "AOCP"],
+      "Fundatec": ["Fundatec", "FUNDATEC"],
+      "Vunesp": ["Vunesp", "VUNESP"],
+      "Cesgranrio": ["Cesgranrio", "CESGRANRIO"],
+      "FGV": ["FGV", "Fundação Getulio Vargas"],
+      "Legalle": ["Legalle", "Legalle Concursos"],
+      "Objetiva": ["Objetiva", "OBJETIVA CONCURSOS", "Objetiva Concursos"]
+    };
+    return aliases[value] || [value];
+  }
+
+  async function selectTreeValue(documentNode, heading, value) {
+    if (!clickText(documentNode, ".menu-alternador-opcao", heading)) {
+      throw new Error("Não encontrei a aba de filtro '" + heading + "'.");
+    }
+    var box = await waitFor(documentNode, function () { return visibleSearchBox(documentNode, heading); }, 10000, "A aba '" + heading + "' não abriu o painel de busca.");
+
+    if (heading === "Ano") {
+      var yearExpected = clean(value).toLocaleLowerCase("pt-BR");
+      var yearItem = await waitFor(documentNode, function () {
+        var currentBox = visibleSearchBox(documentNode, heading) || box;
+        return Array.from(currentBox.querySelectorAll(".arvore-item")).filter(isVisible).find(function (node) {
+          return treeItemMatches(node, yearExpected);
+        }) || null;
+      }, 10000, "O ano '" + value + "' não apareceu na lista de anos.");
+      var yearTarget = treeItemClickTarget(yearItem);
+      if (!clickElement(documentNode, yearTarget)) throw new Error("Encontrei o ano '" + value + ", mas não consegui acionar o item.");
+      await waitFor(documentNode, function () {
+        var currentBox = visibleSearchBox(documentNode, heading);
+        return currentBox && hasSelectedTreeItem(currentBox, yearExpected);
+      }, 5000, "O TecConcursos não confirmou a seleção do ano '" + value + "'.");
+      return;
+    }
+
+    var searchLink = Array.from(box.querySelectorAll("a")).find(function (node) {
+      return clean(node.innerText || node.textContent) === "Pesquisar por nome";
+    });
+    if (searchLink) clickElement(documentNode, searchLink);
+    var search = await waitFor(documentNode, function () {
+      return box.querySelector("input[ng-model='vm.textoBusca']") || box.querySelector("input[placeholder*='três caracteres']");
+    }, 5000, "O campo de busca da aba '" + heading + "' não apareceu.");
+    var candidates = searchCandidates(heading, value);
+    var item = null;
+    for (var index = 0; index < candidates.length && !item; index += 1) {
+      setInputValue(search, candidates[index]);
+      var expected = clean(candidates[index]).toLocaleLowerCase("pt-BR");
+      try {
+        item = await waitFor(documentNode, function () {
+          var currentBox = visibleSearchBox(documentNode, heading) || box;
+          return Array.from(currentBox.querySelectorAll(".arvore-item")).filter(isVisible).find(function (node) {
+            return treeItemMatches(node, expected);
+          }) || null;
+        }, 5000, "O resultado '" + value + "' não apareceu na aba '" + heading + "' após a busca.");
+      } catch (_) {
+        item = null;
+      }
+    }
+    if (!item) throw new Error("Não encontrei '" + value + "' no filtro " + heading + ".");
+    var clickable = treeItemClickTarget(item);
+    if (!clickElement(documentNode, clickable)) throw new Error("Encontrei '" + value + ", mas não consegui acionar o contêiner de seleção.");
+    try {
+      await waitFor(documentNode, function () {
+        var currentBox = visibleSearchBox(documentNode, heading);
+        return currentBox && hasSelectedTreeItem(currentBox, expected);
+      }, 1500, "O TecConcursos não confirmou a seleção de '" + value + "'.");
+      return;
+    } catch (_) {
+      if (!invokeAngularTreeItem(documentNode, item)) {
+        throw new Error("O resultado '" + value + "' foi encontrado, mas o TecConcursos ignorou o clique de seleção.");
+      }
+    }
+    await waitFor(documentNode, function () {
+      var currentBox = visibleSearchBox(documentNode, heading);
+      return currentBox && hasSelectedTreeItem(currentBox, expected);
+    }, 5000, "O TecConcursos ignorou a seleção de '" + value + "'.");
+  }
+
+  async function applyMatterFilters(documentNode, plan, matter, onProgress) {
+    var paths = deps.plan.normalizeMatter(matter).subjectPaths;
+    if (!paths.length) throw new Error(matter.code + " não possui caminho de matéria/assunto para selecionar.");
+    for (var index = 0; index < paths.length; index += 1) {
+      var leaf = deps.plan.lastPathSegment(paths[index]);
+      if (!leaf) continue;
+      if (onProgress) onProgress("Selecionando assunto: " + leaf);
+      await selectTreeValue(documentNode, "Matéria e assunto", leaf);
+    }
+    for (var bankIndex = 0; bankIndex < plan.banks.length; bankIndex += 1) {
+      if (onProgress) onProgress("Selecionando banca: " + plan.banks[bankIndex]);
+      await selectTreeValue(documentNode, "Banca", plan.banks[bankIndex]);
+    }
+    for (var yearIndex = 0; yearIndex < plan.years.length; yearIndex += 1) {
+      if (onProgress) onProgress("Selecionando ano: " + String(plan.years[yearIndex]));
+      await selectTreeValue(documentNode, "Ano", String(plan.years[yearIndex]));
+    }
+    if (onProgress) onProgress("Aplicando remoção de questões anuladas e desatualizadas.");
+    if (plan.removeCancelled) clickText(documentNode, "[role='button'].link-atalho", "Remover anuladas");
+    if (plan.removeOutdated) clickText(documentNode, "[role='button'].link-atalho", "Remover desatualizadas");
+  }
+
+  return {
+    currentPath: currentPath,
+    isFilterPage: isFilterPage,
+    isPrintPage: isPrintPage,
+    isCadernoPage: isCadernoPage,
+    folderIdFromLocation: folderIdFromLocation,
+    filterUrl: filterUrl,
+    cadernoUrl: cadernoUrl,
+    filterHeadingLabel: filterHeadingLabel,
+    searchBoxMatchesHeading: searchBoxMatchesHeading,
+    treeItemMatches: treeItemMatches,
+    hasSelectedTreeItem: hasSelectedTreeItem,
+    treeItemClickTarget: treeItemClickTarget,
+    activeFilterCount: activeFilterCount,
+    clearActiveFilters: clearActiveFilters,
+    searchCandidates: searchCandidates,
+    selectTreeValue: selectTreeValue,
+    applyMatterFilters: applyMatterFilters
+  };
+});
+
+// ---- automation-print.cjs ----
+(function (root, factory) {
+  var api = factory(
+    typeof module !== "undefined" && module.exports ? { dom: require("./automation-dom.cjs") } : { dom: root.TecConcursosModules.automationDom }
+  );
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.automationPrint = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function (deps) {
+  "use strict";
+
+  var clean = deps.dom.clean;
+  var sameText = deps.dom.sameText;
+  var isVisible = deps.dom.isVisible;
+  var waitFor = deps.dom.waitFor;
+  var setInputValue = deps.dom.setInputValue;
+  var clickElement = deps.dom.clickElement;
+
+  function splitRanges(total, maxPerPrint) {
+    var count = Math.max(0, Math.floor(Number(total) || 0));
+    var size = Math.max(1, Math.floor(Number(maxPerPrint) || 200));
+    var ranges = [];
+    for (var start = 1; start <= count; start += size) {
+      ranges.push({ start: start, count: Math.min(size, count - start + 1) });
+    }
+    return ranges;
+  }
+
+  function clickPrintTab(documentNode) {
+    var target = Array.from(documentNode.querySelectorAll("div[role='button']")).filter(isVisible).find(function (node) {
+      return sameText(node.innerText || node.textContent, "Imprimir") && /onSelecionarAba|mostrarAlertaExclusivoParaAssinantes/.test(node.getAttribute("ng-click") || "");
+    });
+    if (target) clickElement(documentNode, target);
+    return Boolean(target);
+  }
+
+  function preparePrintForm(documentNode) {
+    if (!documentNode || typeof documentNode.querySelector !== "function") return false;
+    var form = documentNode.querySelector("#configurar-impressao form, form[action*='/questoes/cadernos/'][action*='/imprimir']");
+    if (!form) return false;
+    // O fluxo usa a aba atual para que o próximo estado seja retomado sem popup.
+    form.setAttribute("target", "_self");
+    return true;
+  }
+
+  function createPrintWorkflow(context) {
+    var rootNode = context.root;
+    var documentNode = context.document;
+    var maxPerPrint = context.maxPerPrint || 200;
+
+    async function submitCurrentRange(state) {
+      var job = state.export.job;
+      if (!clickPrintTab(documentNode)) throw new Error("Não encontrei a aba Imprimir do caderno.");
+      var initialInput = await waitFor(documentNode, function () { return documentNode.querySelector("#questaoInicialInput"); }, 10000, "A tela de impressão não exibiu o campo de questão inicial.");
+      var total = Number(initialInput.getAttribute("max") || initialInput.max || 0);
+      if (!job.ranges.length) {
+        if (!total) throw new Error("O TecConcursos não informou a quantidade total de questões para imprimir.");
+        job.ranges = splitRanges(total, maxPerPrint);
+        job.rangeIndex = 0;
+      }
+      if (!job.printTotalQuestions) job.printTotalQuestions = total;
+      var current = job.ranges[job.rangeIndex];
+      if (!current) throw new Error("Não existe uma parte pendente para imprimir.");
+      context.persistProgress(state, {
+        phase: "preparing-print",
+        message: "Preparando parte " + String(job.rangeIndex + 1) + " de " + String(job.ranges.length) + ": questões " + current.start + " a " + String(current.start + current.count - 1) + ".",
+        matterCode: job.code,
+        matterTitle: job.title,
+        rangeIndex: job.rangeIndex,
+        rangesTotal: job.ranges.length,
+        printTotalQuestions: job.printTotalQuestions
+      });
+      var sequential = documentNode.querySelector("#questoesSequenciais");
+      if (sequential && !sequential.checked && !clickElement(documentNode, sequential)) throw new Error("Não consegui selecionar 'A partir da questão'.");
+      setInputValue(initialInput, current.start);
+      var quantityInput = documentNode.querySelector("#numeroQuestoesInput, #numeroQuestoes");
+      if (quantityInput) setInputValue(quantityInput, current.count);
+      if (String(initialInput.value) !== String(current.start)) throw new Error("O início da impressão não foi atualizado para a questão " + current.start + ".");
+      if (quantityInput && String(quantityInput.value) !== String(current.count)) throw new Error("A quantidade da parte não foi atualizada para " + current.count + " questões.");
+      var confirm = documentNode.querySelector("#confirmar-button");
+      if (!confirm || confirm.disabled) throw new Error("O botão 'Imprimir Caderno' não ficou disponível.");
+      if (!preparePrintForm(documentNode)) throw new Error("Não encontrei o formulário de impressão do caderno.");
+      context.persistProgress(state, {
+        phase: "opening-output",
+        message: "Enviando a parte " + String(job.rangeIndex + 1) + " de " + String(job.ranges.length) + " para a saída de impressão.",
+        matterCode: job.code,
+        matterTitle: job.title,
+        rangeIndex: job.rangeIndex,
+        rangesTotal: job.ranges.length,
+        printTotalQuestions: job.printTotalQuestions
+      });
+      if (!clickElement(documentNode, confirm)) throw new Error("Encontrei 'Imprimir Caderno', mas não consegui acionar o botão.");
+      await waitFor(documentNode, function () { return context.isPrintPage(rootNode); }, 8000, "O clique em 'Imprimir Caderno' não abriu a página HTML de saída.");
+      return "Abrindo a parte iniciada na questão " + current.start + ".";
+    }
+
+    return { submitCurrentRange: submitCurrentRange };
+  }
+
+  return {
+    splitRanges: splitRanges,
+    clickPrintTab: clickPrintTab,
+    preparePrintForm: preparePrintForm,
+    createPrintWorkflow: createPrintWorkflow
+  };
+});
+
+// ---- automation-output.cjs ----
+(function (root, factory) {
+  var api = factory(
+    typeof module !== "undefined" && module.exports ? { library: require("./library.cjs") } : { library: root.TecConcursosModules.library }
+  );
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.automationOutput = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function (deps) {
+  "use strict";
+
+  function createOutputWorkflow(context) {
+    var rootNode = context.root;
+    var documentNode = context.document;
+    var outputWaitTimeoutMs = context.outputWaitTimeoutMs || 60000;
+    var library = context.library;
+    var extractPrintedQuestions = context.extractPrintedQuestions || deps.library.extractPrintedQuestions;
+
+    async function waitForPrintedQuestions(state) {
+      var job = state.export.job;
+      var current = job.ranges[job.rangeIndex];
+      var expected = current ? Number(current.count) || 0 : 0;
+      var lastCount = -1;
+      var observedCount = 0;
+      var lastHeartbeat = 0;
+      context.persistProgress(state, {
+        phase: "waiting-output",
+        message: "Aguardando a página HTML montar as questões da parte " + String(job.rangeIndex + 1) + " de " + String(job.ranges.length) + ".",
+        matterCode: job.code,
+        matterTitle: job.title,
+        rangeIndex: job.rangeIndex,
+        rangesTotal: job.ranges.length,
+        expectedQuestionNodes: expected
+      });
+      try {
+        await context.waitFor(documentNode, function () {
+          var count = documentNode && typeof documentNode.querySelectorAll === "function" ? documentNode.querySelectorAll(".questao").length : 0;
+          observedCount = count;
+          if (count !== lastCount) {
+            lastCount = count;
+            context.recordEvent(state, "output-question-count", { count: count, expected: expected, page: context.pageDiagnosticSnapshot(rootNode, documentNode) });
+            context.writeState(state);
+          } else if (Date.now() - lastHeartbeat >= 1000) {
+            lastHeartbeat = Date.now();
+            context.persistProgress(state, {
+              phase: "waiting-output",
+              message: "Aguardando questões: " + count + (expected ? "/" + expected : "") + ".",
+              questionNodeCount: count,
+              expectedQuestionNodes: expected,
+              rangeIndex: job.rangeIndex,
+              rangesTotal: job.ranges.length
+            });
+          }
+          return count > 0 && (!expected || count >= expected);
+        }, outputWaitTimeoutMs, "A página HTML de impressão não montou a quantidade esperada de questões em " + Math.floor(outputWaitTimeoutMs / 1000) + " segundos.");
+      } catch (error) {
+        context.recordEvent(state, "output-timeout", { expected: expected, observed: observedCount, page: context.pageDiagnosticSnapshot(rootNode, documentNode) });
+        context.writeState(state);
+        throw new Error("A página de impressão não trouxe a quantidade esperada de questões (" + observedCount + "/" + expected + "). " + error.message);
+      }
+      context.recordEvent(state, "output-ready", context.pageDiagnosticSnapshot(rootNode, documentNode));
+      context.writeState(state);
+    }
+
+    async function finishExportPart(state) {
+      var job = state.export.job;
+      var current = job.ranges[job.rangeIndex];
+      context.persistProgress(state, {
+        phase: "reading-output",
+        message: "Lendo a parte " + String(job.rangeIndex + 1) + " de " + String(job.ranges.length) + " da saída de impressão.",
+        matterCode: job.code,
+        matterTitle: job.title,
+        rangeIndex: job.rangeIndex,
+        rangesTotal: job.ranges.length,
+        printTotalQuestions: job.printTotalQuestions
+      });
+      await waitForPrintedQuestions(state);
+      var questions = extractPrintedQuestions(documentNode);
+      if (!questions.length) {
+        context.recordEvent(state, "extraction-empty", { page: context.pageDiagnosticSnapshot(rootNode, documentNode), expected: current && current.count });
+        context.writeState(state);
+        throw new Error("A página de impressão montou o DOM, mas nenhuma questão pôde ser extraída.");
+      }
+      context.recordEvent(state, "questions-extracted", { extracted: questions.length, expected: current && current.count, page: context.pageDiagnosticSnapshot(rootNode, documentNode) });
+      context.writeState(state);
+      var titleNode = documentNode.querySelector("h1");
+      var entry = library.appendPart(Object.assign({}, job, {
+        title: job.title || context.clean(titleNode && (titleNode.innerText || titleNode.textContent)),
+        start: current.start,
+        totalQuestions: job.ranges.reduce(function (total, range) { return total + range.count; }, 0),
+        sourceQuestionCount: Number(job.sourceQuestionCount) || 0,
+        printTotalQuestions: Number(job.printTotalQuestions) || 0
+      }), questions);
+      job.rangeIndex += 1;
+      if (job.rangeIndex < job.ranges.length) {
+        context.persistProgress(state, {
+          phase: "part-saved",
+          message: "Parte salva (" + questions.length + " questões). Retomando a parte " + String(job.rangeIndex + 1) + " de " + String(job.ranges.length) + ".",
+          matterCode: job.code,
+          matterTitle: job.title,
+          rangeIndex: job.rangeIndex,
+          rangesTotal: job.ranges.length,
+          printTotalQuestions: job.printTotalQuestions
+        });
+        rootNode.location.href = context.cadernoUrl(rootNode, job.cadernoId);
+        return "Parte salva: " + questions.length + " questões. Indo para a próxima parte.";
+      }
+      state.export = null;
+      if (state.creation) {
+        state.creation.outcomes.push({ code: state.creation.current.code, cadernoId: job.cadernoId, entryId: entry.id, savedAt: new Date().toISOString() });
+        state.creation.index += 1;
+        state.creation.phase = "prepare";
+        state.creation.current = null;
+        context.persistProgress(state, {
+          phase: "next-matter",
+          message: "Caderno " + entry.title + " consolidado. Preparando o próximo caderno.",
+          matterIndex: state.creation.index,
+          mattersTotal: state.creation.plan.matters.length,
+          lastSavedEntryId: entry.id,
+          lastSavedQuestions: questions.length
+        });
+        rootNode.location.href = state.creation.filterUrl;
+        return "Caderno " + entry.title + " consolidado na biblioteca. Preparando o próximo.";
+      }
+      state.running = false;
+      context.persistProgress(state, {
+        phase: "completed",
+        message: "Caderno " + entry.title + " consolidado na biblioteca.",
+        matterIndex: 1,
+        mattersTotal: 1,
+        lastSavedEntryId: entry.id,
+        lastSavedQuestions: questions.length
+      });
+      context.lockManager.releaseLease(state);
+      return "Caderno " + entry.title + " consolidado na biblioteca.";
+    }
+
+    return {
+      waitForPrintedQuestions: waitForPrintedQuestions,
+      finishExportPart: finishExportPart
+    };
+  }
+
+  return { createOutputWorkflow: createOutputWorkflow };
+});
+
+// ---- automation-caderno.cjs ----
+(function (root, factory) {
+  var api = factory(
+    typeof module !== "undefined" && module.exports ? {
+      plan: require("./plan.cjs"),
+      filters: require("./automation-filters.cjs")
+    } : {
+      plan: root.TecConcursosModules.plan,
+      filters: root.TecConcursosModules.automationFilters
+    }
+  );
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.automationCaderno = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function (deps) {
+  "use strict";
+
+  function createCadernoWorkflow(context) {
+    var documentNode = context.document;
+    var filters = deps.filters;
+    var plan = deps.plan;
+
+    async function createNextCaderno(state) {
+      var creation = state.creation;
+      var matter = creation.plan.matters[creation.index];
+      if (!matter) {
+        state.running = false;
+        state.creation = null;
+        context.persistProgress(state, { phase: "completed", message: "Todos os cadernos do plano foram processados.", matterIndex: creation.index, mattersTotal: creation.plan.matters.length });
+        context.lockManager.releaseLease(state);
+        return "Todos os cadernos do plano foram processados.";
+      }
+      context.persistProgress(state, {
+        phase: "filtering",
+        message: "Aplicando filtros para " + matter.title + ".",
+        matterCode: matter.code,
+        matterTitle: matter.title,
+        matterIndex: creation.index,
+        mattersTotal: creation.plan.matters.length
+      });
+      await filters.clearActiveFilters(documentNode);
+      await filters.applyMatterFilters(documentNode, creation.plan, matter, function (message) {
+        context.persistProgress(state, {
+          phase: "filtering",
+          message: message,
+          matterCode: matter.code,
+          matterTitle: matter.title,
+          matterIndex: creation.index,
+          mattersTotal: creation.plan.matters.length
+        });
+      });
+      var sourceQuestionCount = context.foundQuestionCount(documentNode);
+      if (!sourceQuestionCount) throw new Error("Os filtros foram aplicados, mas não consegui ler a quantidade de questões encontradas.");
+      context.persistProgress(state, {
+        phase: "naming-caderno",
+        message: "Filtros concluídos: " + sourceQuestionCount + " questões. Preenchendo o nome do caderno.",
+        sourceQuestionCount: sourceQuestionCount,
+        matterCode: matter.code,
+        matterTitle: matter.title,
+        matterIndex: creation.index,
+        mattersTotal: creation.plan.matters.length
+      });
+      var nameInput = documentNode.querySelector("#nomeCadernoId");
+      var folderSelect = documentNode.querySelector("#pastaCadernosId");
+      var generateButton = Array.from(documentNode.querySelectorAll("button")).filter(context.isVisible).find(function (button) {
+        return context.sameText(button.innerText || button.textContent, "Gerar Caderno");
+      });
+      if (!nameInput || !folderSelect || !generateButton) throw new Error("Não encontrei os controles de geração do caderno.");
+      if (!context.fillCadernoName(documentNode, nameInput, matter.title)) {
+        throw new Error("Não consegui preencher o nome do caderno com o título do plano: " + matter.title + ".");
+      }
+      var option = Array.from(folderSelect.options || []).find(function (item) { return String(item.value) === String(creation.folderId); });
+      if (!option) throw new Error("A pasta " + creation.folderId + " não está disponível no seletor do TecConcursos.");
+      folderSelect.value = option.value;
+      folderSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await context.waitFor(documentNode, function () { return !generateButton.disabled; }, 12000, "O botão 'Gerar Caderno' permaneceu desabilitado após aplicar os filtros.");
+      creation.phase = "awaiting-caderno";
+      creation.current = Object.assign({}, matter, { sourceQuestionCount: sourceQuestionCount });
+      context.persistProgress(state, {
+        phase: "creating-caderno",
+        message: "Gerando o caderno " + matter.title + " com " + sourceQuestionCount + " questões.",
+        sourceQuestionCount: sourceQuestionCount,
+        matterCode: matter.code,
+        matterTitle: matter.title,
+        matterIndex: creation.index,
+        mattersTotal: creation.plan.matters.length
+      });
+      if (!context.clickElement(documentNode, generateButton)) throw new Error("Encontrei 'Gerar Caderno', mas não consegui acionar o botão.");
+      context.persistProgress(state, {
+        phase: "waiting-caderno",
+        message: "Caderno solicitado. Aguardando a página do novo caderno.",
+        sourceQuestionCount: sourceQuestionCount,
+        matterCode: matter.code,
+        matterTitle: matter.title,
+        matterIndex: creation.index,
+        mattersTotal: creation.plan.matters.length
+      });
+      return "Solicitação de criação enviada para " + matter.title + " (" + sourceQuestionCount + " questões encontradas).";
+    }
+
+    return { createNextCaderno: createNextCaderno };
+  }
+
+  return { createCadernoWorkflow: createCadernoWorkflow };
+});
+
+// ---- automation-diagnostics.cjs ----
+(function (root, factory) {
+  var api = factory(
+    typeof module !== "undefined" && module.exports ? {
+      state: require("./automation-state.cjs"),
+      dom: require("./automation-dom.cjs")
+    } : {
+      state: root.TecConcursosModules.automationState,
+      dom: root.TecConcursosModules.automationDom
+    }
+  );
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.automationDiagnostics = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function (deps) {
+  "use strict";
+
+  function createDiagnostics(context) {
+    function markProgress(state, patch) {
+      return deps.state.markProgress(state, patch);
+    }
+
+    function recordEvent(state, eventName, details) {
+      return deps.state.appendEvent(
+        state,
+        eventName,
+        details,
+        context.root && context.root.location && context.root.location.href,
+        deps.dom.compactDiagnosticValue
+      );
+    }
+
+    function persistProgress(state, patch) {
+      markProgress(state, patch);
+      recordEvent(state, "progress", patch);
+      return context.writeState(state);
+    }
+
+    function getProgress() {
+      var state = context.readState();
+      var progress = state.progress && typeof state.progress === "object" ? state.progress : {};
+      var updatedAtMs = progress.updatedAt ? Date.parse(progress.updatedAt) : NaN;
+      var ageMs = Number.isFinite(updatedAtMs) ? Math.max(0, Date.now() - updatedAtMs) : null;
+      var job = state.export && state.export.job;
+      var creation = state.creation;
+      var lock = context.lockManager.lockInfo(state);
+      return Object.assign({}, progress, {
+        running: Boolean(state.running),
+        stale: Boolean(state.running && ageMs != null && ageMs >= context.staleAfterMs),
+        ageMs: ageMs,
+        matterIndex: creation ? Number(creation.index) || 0 : progress.matterIndex,
+        mattersTotal: creation && creation.plan ? creation.plan.matters.length : progress.mattersTotal,
+        rangeIndex: job ? Number(job.rangeIndex) || 0 : progress.rangeIndex,
+        rangesTotal: job && job.ranges ? job.ranges.length : progress.rangesTotal,
+        ownerId: lock.ownerId,
+        ownsLock: lock.ownsLock,
+        lockActive: lock.active,
+        lockedByOtherTab: lock.lockedByOtherTab,
+        lockOwnerId: lock.lockOwnerId,
+        lockExpiresAt: lock.expiresAt
+      });
+    }
+
+    function getDiagnostics() {
+      var state = context.readState();
+      var progress = getProgress();
+      return {
+        generatedAt: new Date().toISOString(),
+        status: context.status(),
+        page: context.pageDiagnosticSnapshot(context.root, context.document),
+        state: {
+          running: Boolean(state.running),
+          runId: state.runId || null,
+          ownerId: state.ownerId || context.ownerId,
+          creationIndex: state.creation ? Number(state.creation.index) || 0 : null,
+          creationPhase: state.creation ? String(state.creation.phase || "") : null,
+          exportRangeIndex: state.export && state.export.job ? Number(state.export.job.rangeIndex) || 0 : null,
+          exportRangesTotal: state.export && state.export.job && state.export.job.ranges ? state.export.job.ranges.length : null
+        },
+        lock: context.lockManager.lockInfo(state),
+        progress: {
+          phase: progress.phase || "",
+          message: progress.message || "",
+          updatedAt: progress.updatedAt || null,
+          stale: Boolean(progress.stale),
+          history: Array.isArray(progress.history) ? progress.history : [],
+          events: Array.isArray(progress.events) ? progress.events : []
+        }
+      };
+    }
+
+    return {
+      markProgress: markProgress,
+      recordEvent: recordEvent,
+      persistProgress: persistProgress,
+      getProgress: getProgress,
+      getDiagnostics: getDiagnostics
+    };
+  }
+
+  return { createDiagnostics: createDiagnostics };
+});
+
+// ---- automation-orchestrator.cjs ----
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.automationOrchestrator = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  function createOrchestrator(context) {
+    async function resume() {
+      var state = context.readState();
+      if (!state.running) return context.status();
+      var acquired = context.lockManager.acquireLease(state, false);
+      if (!acquired.acquired) return context.lockManager.lockStatus(acquired.lock);
+      context.recordEvent(state, "resume-enter", { page: context.pageDiagnosticSnapshot(context.root, context.document), running: Boolean(state.running) });
+      context.writeState(state);
+      if (context.isPrintPage(context.root) && state.export && state.export.job) return context.output.finishExportPart(state);
+      if (context.isCadernoPage(context.root) && state.creation && state.creation.phase === "awaiting-caderno" && !state.export) {
+        var createdId = context.cadernoIdFromLocation(context.root.location);
+        if (!createdId) throw new Error("O TecConcursos abriu um caderno sem identificador.");
+        var currentMatter = state.creation.current;
+        state.export = { job: {
+          libraryId: createdId,
+          cadernoId: createdId,
+          title: currentMatter.title,
+          code: currentMatter.code,
+          group: currentMatter.group,
+          sourceQuestionCount: Number(currentMatter.sourceQuestionCount) || 0,
+          ranges: [],
+          rangeIndex: 0
+        } };
+        state.creation.phase = "exporting";
+        context.persistProgress(state, {
+          phase: "preparing-print",
+          message: "Novo caderno aberto. Preparando a primeira parte da impressão.",
+          matterCode: currentMatter.code,
+          matterTitle: currentMatter.title,
+          matterIndex: state.creation.index,
+          mattersTotal: state.creation.plan.matters.length
+        });
+      }
+      if (context.isCadernoPage(context.root) && state.export && state.export.job) return context.print.submitCurrentRange(state);
+      if (context.isFilterPage(context.root) && state.creation && state.creation.phase === "prepare") return context.caderno.createNextCaderno(state);
+      return context.status();
+    }
+
+    return { resume: resume };
+  }
+
+  return { createOrchestrator: createOrchestrator };
+});
+
+// ---- automation.cjs ----
+(function (root, factory) {
+  var api = factory(
+    typeof module !== "undefined" && module.exports ? {
+      plan: require("./plan.cjs"),
+      library: require("./library.cjs"),
+      dom: require("./automation-dom.cjs"),
+      lock: require("./automation-lock.cjs"),
+      state: require("./automation-state.cjs"),
+      filters: require("./automation-filters.cjs"),
+      print: require("./automation-print.cjs"),
+      output: require("./automation-output.cjs"),
+      caderno: require("./automation-caderno.cjs"),
+      diagnostics: require("./automation-diagnostics.cjs"),
+      orchestrator: require("./automation-orchestrator.cjs")
+    } : (function (modules) {
+      return Object.assign({}, modules, {
+        dom: modules.automationDom,
+        lock: modules.automationLock,
+        state: modules.automationState,
+        filters: modules.automationFilters,
+        print: modules.automationPrint,
+        output: modules.automationOutput,
+        caderno: modules.automationCaderno,
+        diagnostics: modules.automationDiagnostics,
+        orchestrator: modules.automationOrchestrator
+      });
+    })(root.TecConcursosModules)
+  );
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.automation = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function (deps) {
+  "use strict";
+
+  var stateModule = deps.state;
+  var STATE_KEY = stateModule.STATE_KEY;
+  var PLAN_KEY = stateModule.PLAN_KEY;
+  var FOLDER_KEY = stateModule.FOLDER_KEY;
+  var MAX_PER_PRINT = stateModule.MAX_PER_PRINT;
+  var STALE_AFTER_MS = stateModule.STALE_AFTER_MS;
+  var OUTPUT_WAIT_TIMEOUT_MS = stateModule.OUTPUT_WAIT_TIMEOUT_MS;
+  var clean = deps.dom.clean;
+  var sameText = deps.dom.sameText;
+  var isVisible = deps.dom.isVisible;
+  var waitFor = deps.dom.waitFor;
+  var clickElement = deps.dom.clickElement;
+  var commitInputValue = deps.dom.commitInputValue;
+  var fillCadernoName = deps.dom.fillCadernoName;
+  var foundQuestionCount = deps.dom.foundQuestionCount;
+  var pageDiagnosticSnapshot = deps.dom.pageDiagnosticSnapshot;
+  var cadernoIdFromLocation = deps.library.cadernoIdFromLocation;
+
+  function createAutomation(options) {
+    var config = options || {};
+    var rootNode = config.root;
+    var documentNode = config.document;
+    var storage = config.storage;
+    var library = config.library;
+
+    function readState() {
+      return stateModule.normalizeState(storage.read(STATE_KEY, stateModule.defaultState()));
+    }
+
+    var lockManager = deps.lock.createLockManager({ root: rootNode, storage: storage, readState: readState, ownerId: config.ownerId });
+    var ownerId = lockManager.ownerId;
+
+    function writeState(state, options) {
+      if (!(options && options.skipLease)) lockManager.ensureLease(state);
+      storage.write(STATE_KEY, state);
+      return state;
+    }
+
+    var getProgress;
+    function status() {
+      var state = readState();
+      var progress = getProgress();
+      if (progress.phase === "error") return progress.message || "A automação falhou.";
+      if (progress.phase === "paused") return progress.message || "Automação pausada.";
+      if (state.running && progress.lockedByOtherTab) return lockManager.lockStatus(lockManager.readLock());
+      if (!state.running) {
+        if (progress.phase === "completed") return progress.message || "Automação concluída.";
+        return "Pronto.";
+      }
+      if (progress.stale) return "Sem atividade há " + Math.max(1, Math.floor((progress.ageMs || 0) / 1000)) + "s. Verifique a aba de saída ou retome a execução.";
+      if (state.export && state.export.job) {
+        var job = state.export.job;
+        return "Exportando " + job.title + ": parte " + String((job.rangeIndex || 0) + 1) + " de " + String((job.ranges || []).length || "?") + ".";
+      }
+      if (state.creation) return "Criando caderno " + String(state.creation.index + 1) + " de " + String(state.creation.plan.matters.length) + ".";
+      return "Processo em andamento.";
+    }
+
+    var diagnostics = deps.diagnostics.createDiagnostics({
+      root: rootNode,
+      document: documentNode,
+      ownerId: ownerId,
+      staleAfterMs: STALE_AFTER_MS,
+      readState: readState,
+      writeState: writeState,
+      lockManager: lockManager,
+      status: function () { return status(); },
+      pageDiagnosticSnapshot: pageDiagnosticSnapshot
+    });
+    getProgress = diagnostics.getProgress;
+
+    var cadernoWorkflow = deps.caderno.createCadernoWorkflow({
+      document: documentNode,
+      lockManager: lockManager,
+      persistProgress: diagnostics.persistProgress,
+      foundQuestionCount: foundQuestionCount,
+      isVisible: isVisible,
+      sameText: sameText,
+      fillCadernoName: fillCadernoName,
+      waitFor: waitFor,
+      clickElement: clickElement
+    });
+    var printWorkflow = deps.print.createPrintWorkflow({
+      root: rootNode,
+      document: documentNode,
+      maxPerPrint: MAX_PER_PRINT,
+      persistProgress: diagnostics.persistProgress,
+      isPrintPage: deps.filters.isPrintPage
+    });
+    var outputWorkflow = deps.output.createOutputWorkflow({
+      root: rootNode,
+      document: documentNode,
+      library: library,
+      lockManager: lockManager,
+      outputWaitTimeoutMs: OUTPUT_WAIT_TIMEOUT_MS,
+      persistProgress: diagnostics.persistProgress,
+      recordEvent: diagnostics.recordEvent,
+      writeState: writeState,
+      waitFor: waitFor,
+      clean: clean,
+      pageDiagnosticSnapshot: pageDiagnosticSnapshot,
+      cadernoUrl: deps.filters.cadernoUrl
+    });
+    var orchestrator = deps.orchestrator.createOrchestrator({
+      root: rootNode,
+      document: documentNode,
+      lockManager: lockManager,
+      readState: readState,
+      writeState: writeState,
+      status: status,
+      recordEvent: diagnostics.recordEvent,
+      persistProgress: diagnostics.persistProgress,
+      pageDiagnosticSnapshot: pageDiagnosticSnapshot,
+      cadernoIdFromLocation: cadernoIdFromLocation,
+      isFilterPage: deps.filters.isFilterPage,
+      isPrintPage: deps.filters.isPrintPage,
+      isCadernoPage: deps.filters.isCadernoPage,
+      caderno: cadernoWorkflow,
+      print: printWorkflow,
+      output: outputWorkflow
+    });
+    var resume = orchestrator.resume;
+
+    function errorMessage(error) {
+      return String(error && error.message || error || "Erro desconhecido").replace(/\s+/g, " ").trim();
+    }
+
+    function readPlan() { return deps.plan.normalizePlan(storage.read(PLAN_KEY, {})); }
+    function savePlan(plan) { var normalized = deps.plan.normalizePlan(plan); storage.write(PLAN_KEY, normalized); return normalized; }
+    function readFolderId() {
+      var fromLocation = deps.filters.folderIdFromLocation(rootNode);
+      if (fromLocation) {
+        storage.write(FOLDER_KEY, fromLocation);
+        return fromLocation;
+      }
+      return clean(storage.read(FOLDER_KEY, ""));
+    }
+    function saveFolderId(value) {
+      var id = clean(value);
+      storage.write(FOLDER_KEY, id);
+      return id;
+    }
+    function pause() {
+      var state = readState();
+      if (state.runId && !lockManager.ownsLock(lockManager.readLock(), state)) return status();
+      state.running = false;
+      diagnostics.persistProgress(state, { phase: "paused", message: "Automação pausada. A execução pode ser retomada." });
+      lockManager.releaseLease(state);
+      return status();
+    }
+    function fail(error) {
+      var state = readState();
+      if (!state.running && !state.creation && !state.export) return status();
+      if (state.runId && !lockManager.ownsLock(lockManager.readLock(), state)) return status();
+      diagnostics.recordEvent(state, "error-detected", { error: errorMessage(error), page: pageDiagnosticSnapshot(rootNode, documentNode) });
+      state.running = false;
+      diagnostics.persistProgress(state, { phase: "error", message: "Falha na automação: " + errorMessage(error), error: errorMessage(error), failedAt: new Date().toISOString() });
+      lockManager.releaseLease(state);
+      return status();
+    }
+    function resumePaused() {
+      var state = readState();
+      if (!state.creation && !state.export) throw new Error("Não há uma automação pausada ou pendente para retomar.");
+      var acquired = lockManager.acquireLease(state, false);
+      if (!acquired.acquired) return lockManager.lockStatus(acquired.lock);
+      state.running = true;
+      diagnostics.persistProgress(state, { phase: "resuming", message: "Retomando a automação na etapa salva..." });
+      return resume();
+    }
+    function startCreation(folderId) {
+      var plan = readPlan();
+      if (!plan.matters.length) throw new Error("Importe o plano consolidado antes de criar os cadernos.");
+      var id = clean(folderId || readFolderId());
+      if (!id) throw new Error("Informe a pasta de destino do TecConcursos.");
+      var existing = readState();
+      if (existing.running || existing.creation || existing.export) {
+        throw new Error(status() || "Já existe uma automação em andamento.");
+      }
+      saveFolderId(id);
+      var state = {
+        version: 1,
+        runId: lockManager.createRunId(),
+        ownerId: ownerId,
+        running: true,
+        creation: { plan: plan, folderId: id, filterUrl: deps.filters.filterUrl(rootNode, id), index: 0, phase: "prepare", outcomes: [] },
+        export: null,
+        progress: { phase: "starting", message: "Plano iniciado.", matterIndex: 0, mattersTotal: plan.matters.length, startedAt: new Date().toISOString() }
+      };
+      var acquired = lockManager.acquireLease(state, false);
+      if (!acquired.acquired) throw lockManager.lockError(acquired.lock);
+      writeState(state);
+      if (!deps.filters.isFilterPage(rootNode)) {
+        rootNode.location.href = state.creation.filterUrl;
+        return "Abrindo a página de filtros para iniciar a criação.";
+      }
+      return resume();
+    }
+    function startCurrentCaderno() {
+      var id = cadernoIdFromLocation(rootNode.location);
+      if (!id || !deps.filters.isCadernoPage(rootNode)) throw new Error("Abra um caderno antes de iniciar a exportação.");
+      var titleNode = documentNode.querySelector("h1, .titulo-caderno");
+      var state = readState();
+      if (state.running || state.creation || state.export) throw new Error(status() || "Já existe uma automação em andamento.");
+      state.runId = lockManager.createRunId();
+      state.ownerId = ownerId;
+      state.running = true;
+      state.export = { job: {
+        libraryId: id,
+        cadernoId: id,
+        title: clean(titleNode && (titleNode.innerText || titleNode.textContent)) || "Caderno " + id,
+        code: "MANUAL-" + id,
+        group: "Exportações manuais",
+        ranges: [],
+        rangeIndex: 0
+      } };
+      var acquired = lockManager.acquireLease(state, false);
+      if (!acquired.acquired) throw lockManager.lockError(acquired.lock);
+      diagnostics.persistProgress(state, { phase: "starting-export", message: "Preparando a exportação do caderno atual.", matterIndex: 0, mattersTotal: 1 });
+      return resume();
+    }
+    function takeover() {
+      var state = readState();
+      if (!state.creation && !state.export) throw new Error("Não há uma automação pendente para assumir.");
+      if (!state.runId) state.runId = lockManager.createRunId();
+      state.ownerId = ownerId;
+      state.running = true;
+      var acquired = lockManager.acquireLease(state, true);
+      if (!acquired.acquired) throw lockManager.lockError(acquired.lock);
+      diagnostics.persistProgress(state, {
+        phase: "taking-over",
+        message: "Execução assumida por esta aba. Retomando na etapa salva.",
+        takeoverAt: new Date().toISOString()
+      });
+      return resume();
+    }
+
+    return {
+      readPlan: readPlan,
+      savePlan: savePlan,
+      getState: readState,
+      status: status,
+      pause: pause,
+      takeover: takeover,
+      startCreation: startCreation,
+      startCurrentCaderno: startCurrentCaderno,
+      resume: resume,
+      resumePaused: resumePaused,
+      fail: fail,
+      getProgress: diagnostics.getProgress,
+      getDiagnostics: diagnostics.getDiagnostics,
+      readFolderId: readFolderId,
+      saveFolderId: saveFolderId,
+      defaultFolderId: readFolderId
+    };
+  }
+
+  return {
+    STATE_KEY: STATE_KEY,
+    PLAN_KEY: PLAN_KEY,
+    FOLDER_KEY: FOLDER_KEY,
+    LOCK_KEY: deps.lock.LOCK_KEY,
+    OWNER_SESSION_KEY: deps.lock.OWNER_SESSION_KEY,
+    MAX_PER_PRINT: MAX_PER_PRINT,
+    STALE_AFTER_MS: STALE_AFTER_MS,
+    LOCK_LEASE_MS: deps.lock.LOCK_LEASE_MS,
+    LOCK_HEARTBEAT_MS: deps.lock.LOCK_HEARTBEAT_MS,
+    filterHeadingLabel: deps.filters.filterHeadingLabel,
+    sameText: sameText,
+    commitInputValue: commitInputValue,
+    fillCadernoName: fillCadernoName,
+    foundQuestionCount: foundQuestionCount,
+    preparePrintForm: deps.print.preparePrintForm,
+    pageDiagnosticSnapshot: pageDiagnosticSnapshot,
+    searchCandidates: deps.filters.searchCandidates,
+    searchBoxMatchesHeading: deps.filters.searchBoxMatchesHeading,
+    treeItemMatches: deps.filters.treeItemMatches,
+    hasSelectedTreeItem: deps.filters.hasSelectedTreeItem,
+    treeItemClickTarget: deps.filters.treeItemClickTarget,
+    invokeAngularTreeItem: deps.dom.invokeAngularTreeItem,
+    activeFilterCount: deps.filters.activeFilterCount,
+    splitRanges: deps.print.splitRanges,
+    createAutomation: createAutomation
+  };
 });
 
 // ---- timing.cjs ----
@@ -1122,72 +3353,367 @@
   return { createPanel: createPanel };
 });
 
+// ---- library-ui.cjs ----
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.libraryUi = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  function button(documentNode, label, className) {
+    var item = documentNode.createElement("button");
+    item.type = "button";
+    item.textContent = label;
+    item.className = className || "";
+    return item;
+  }
+
+  function createPanel(documentNode, handlers) {
+    if (documentNode.getElementById("tec-library-panel")) return null;
+    var config = handlers || {};
+    var style = documentNode.createElement("style");
+    style.textContent = "#tec-library-launcher{position:fixed;left:18px;bottom:18px;z-index:2147483646;border:0;border-radius:999px;background:#1d4ed8;color:#fff;padding:12px 16px;font:700 14px system-ui;box-shadow:0 8px 22px #1e3a8a66;cursor:pointer}#tec-library-panel{position:fixed;left:18px;bottom:18px;z-index:2147483647;width:min(460px,calc(100vw - 36px));max-height:min(720px,calc(100vh - 36px));display:none;flex-direction:column;overflow:hidden;border-radius:16px;background:#f8fafc;color:#172554;box-shadow:0 18px 55px #0f172a55;font:14px system-ui}#tec-library-panel.open{display:flex}#tec-library-panel .head{display:flex;align-items:center;gap:10px;padding:15px 16px;background:linear-gradient(135deg,#1d4ed8,#0f766e);color:#fff}#tec-library-panel .head strong{font-size:16px}#tec-library-panel .head button{margin-left:auto;border:0;background:#ffffff22;color:#fff;border-radius:8px;padding:6px 9px;cursor:pointer}#tec-library-panel .tabs{display:flex;gap:5px;padding:10px 12px;border-bottom:1px solid #dbeafe;background:#fff}#tec-library-panel .tabs button{border:0;border-radius:7px;background:#eff6ff;color:#1e3a8a;padding:7px 10px;cursor:pointer;font-weight:700}#tec-library-panel .tabs button.active{background:#1d4ed8;color:#fff}#tec-library-panel .body{overflow:auto;padding:14px 16px}#tec-library-panel label{display:block;margin:8px 0 4px;font-weight:700}#tec-library-panel textarea,#tec-library-panel input{width:100%;box-sizing:border-box;border:1px solid #bfdbfe;border-radius:8px;padding:8px;font:13px ui-monospace,Consolas,monospace}#tec-library-panel textarea{min-height:106px;resize:vertical}#tec-library-panel .actions{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}#tec-library-panel .actions button,#tec-library-panel .entry-actions button{border:0;border-radius:8px;background:#1d4ed8;color:#fff;padding:8px 10px;font-weight:700;cursor:pointer}#tec-library-panel .actions button.secondary,#tec-library-panel .entry-actions button.secondary{background:#475569}#tec-library-panel .actions button.danger,#tec-library-panel .entry-actions button.danger{background:#b91c1c}#tec-library-panel .status{min-height:36px;color:#0f766e;font-size:13px;line-height:1.35}#tec-library-panel .hint{padding:10px;border-radius:9px;background:#eff6ff;color:#1e3a8a;font-size:13px;line-height:1.4}#tec-library-panel details{margin:8px 0;border:1px solid #dbeafe;border-radius:9px;background:#fff}#tec-library-panel summary{cursor:pointer;padding:9px 10px;font-weight:700}#tec-library-panel .entry{padding:8px 10px;border-top:1px solid #eff6ff}#tec-library-panel .entry button.entry-open{border:0;background:transparent;color:#1d4ed8;padding:0;text-align:left;font:700 13px system-ui;cursor:pointer}#tec-library-panel .entry small{display:block;margin-top:3px;color:#64748b}#tec-library-panel .entry-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}#tec-library-panel .entry-actions button{font-size:12px;padding:6px 8px}";
+    documentNode.head.appendChild(style);
+
+    var launcher = button(documentNode, "", "");
+    launcher.id = "tec-library-launcher";
+    var launcherLabel = documentNode.createElement("span");
+    launcherLabel.textContent = "Biblioteca TC";
+    var launcherStatus = documentNode.createElement("small");
+    launcherStatus.style.marginLeft = "8px";
+    launcherStatus.style.fontWeight = "700";
+    launcherStatus.style.opacity = "0.92";
+    launcher.appendChild(launcherLabel);
+    launcher.appendChild(launcherStatus);
+    var panel = documentNode.createElement("section");
+    panel.id = "tec-library-panel";
+    panel.dataset.tecScraperVersion = "2.5.11";
+    launcher.dataset.tecScraperVersion = "2.5.11";
+    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.5.11</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button></div><div class=\"body\"></div>";
+    documentNode.body.appendChild(launcher);
+    documentNode.body.appendChild(panel);
+    var body = panel.querySelector(".body");
+    var activeTab = "automation";
+
+    function progressSnapshot() {
+      return typeof config.getProgress === "function" ? (config.getProgress() || {}) : {};
+    }
+
+    function progressLabel(progress) {
+      if (progress.lockedByOtherTab) return "⏸ outra aba";
+      if (progress.running) return progress.stale ? "⚠ sem atividade" : "● trabalhando";
+      if (progress.phase === "error") return "✖ erro";
+      if (progress.phase === "paused") return "Ⅱ pausado";
+      if (progress.phase === "completed") return "✓ concluído";
+      return "";
+    }
+
+    function progressDetails(progress) {
+      var message = String(progress.message || (typeof config.getStatus === "function" ? config.getStatus() : "Pronto.") || "");
+      var details = [];
+      if (progress.running && progress.mattersTotal) details.push("caderno " + String((Number(progress.matterIndex) || 0) + 1) + "/" + progress.mattersTotal);
+      if (progress.running && progress.rangesTotal) details.push("parte " + String((Number(progress.rangeIndex) || 0) + 1) + "/" + progress.rangesTotal);
+      if (progress.updatedAt) {
+        var time = new Date(progress.updatedAt);
+        if (!Number.isNaN(time.getTime())) details.push("última atividade " + time.toLocaleTimeString("pt-BR"));
+      }
+      if (progress.events && progress.events.length) details.push(String(progress.events.length) + " eventos registrados");
+      if (progress.stale) details.unshift("ATENÇÃO: sem atividade há " + Math.max(1, Math.floor((progress.ageMs || 0) / 1000)) + "s");
+      if (progress.lockedByOtherTab) details.unshift("execução pertence a outra aba");
+      return details.length ? message + " · " + details.join(" · ") : message;
+    }
+
+    function refreshProgress() {
+      var progress = progressSnapshot();
+      var label = progressLabel(progress);
+      launcherStatus.textContent = label;
+      launcher.title = progressDetails(progress);
+      var progressNode = body.querySelector("#tec-progress");
+      if (progressNode) {
+        progressNode.textContent = progressDetails(progress);
+        progressNode.style.color = progress.phase === "error" || progress.stale ? "#b91c1c" : progress.phase === "paused" ? "#92400e" : "#1e3a8a";
+      }
+    }
+
+    function handleAutomationError(error) {
+      if (config.onError) {
+        try { config.onError(error); } catch (_) {}
+      }
+      setStatus(error && error.message || error, true);
+      refreshProgress();
+    }
+
+    function setStatus(message, isError) {
+      var node = body.querySelector(".status");
+      if (!node) return;
+      node.textContent = String(message || "");
+      node.style.color = isError ? "#b91c1c" : "#0f766e";
+      refreshProgress();
+    }
+
+    function automationView() {
+      var plan = typeof config.getPlan === "function" ? config.getPlan() : { matters: [] };
+      body.innerHTML = "<div class=\"hint\">Cole ou selecione o seu <code>Tecconcursos_Materias_Consolidado.md</code> (ou JSON). O plano fica salvo no script e cada MAT vira um caderno no TecConcursos.</div><label for=\"tec-plan-file\">Arquivo do plano</label><input id=\"tec-plan-file\" type=\"file\" accept=\".md,.txt,.json,text/plain,text/markdown,application/json\"><label for=\"tec-plan-input\">Plano de matérias</label><textarea id=\"tec-plan-input\" placeholder=\"MAT-001 — Coesão textual&#10;TecConcursos: 12507 — Língua Portuguesa ...\"></textarea><div class=\"actions\"><button type=\"button\" data-action=\"import\">Salvar plano</button></div><div class=\"hint\" id=\"tec-plan-summary\">Plano atual: " + String(plan.matters && plan.matters.length || 0) + " matéria(s), " + String(plan.banks && plan.banks.length || 0) + " banca(s) e " + String(plan.years && plan.years.length || 0) + " ano(s).</div><label for=\"tec-folder-id\">ID da pasta de destino no TecConcursos</label><input id=\"tec-folder-id\" value=\"" + String(typeof config.defaultFolderId === "function" ? config.defaultFolderId() : "") + "\" inputmode=\"numeric\"><div class=\"actions\"><button type=\"button\" data-action=\"create\">Criar e exportar plano</button><button type=\"button\" data-action=\"current\" class=\"secondary\">Exportar caderno atual</button><button type=\"button\" data-action=\"pause\" class=\"danger\">Pausar</button><button type=\"button\" data-action=\"resume\" class=\"secondary\">Retomar execução</button><button type=\"button\" data-action=\"takeover\" class=\"secondary\">Assumir execução</button><button type=\"button\" data-action=\"diagnostics\" class=\"secondary\">Baixar log detalhado</button></div><div class=\"hint\" id=\"tec-progress\"></div><div class=\"status\"></div>";
+      var folderInput = body.querySelector("#tec-folder-id");
+      folderInput.addEventListener("input", function () {
+        if (config.onFolderIdChange) config.onFolderIdChange(folderInput.value);
+      });
+      setStatus(typeof config.getStatus === "function" ? config.getStatus() : "Pronto.", false);
+      refreshProgress();
+      body.querySelector("[data-action='import']").addEventListener("click", function () {
+        try {
+          var result = config.onImport && config.onImport(body.querySelector("#tec-plan-input").value);
+          automationView();
+          setStatus(result || "Plano salvo.", false);
+        } catch (error) { setStatus(error.message || error, true); }
+      });
+      body.querySelector("#tec-plan-file").addEventListener("change", function (event) {
+        var file = event.target.files && event.target.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function () { body.querySelector("#tec-plan-input").value = String(reader.result || ""); setStatus("Arquivo carregado. Clique em 'Salvar plano'.", false); };
+        reader.onerror = function () { setStatus("Não foi possível ler o arquivo selecionado.", true); };
+        reader.readAsText(file, "UTF-8");
+      });
+      body.querySelector("[data-action='create']").addEventListener("click", function () {
+        try { Promise.resolve(config.onCreate && config.onCreate(body.querySelector("#tec-folder-id").value)).then(function (message) { setStatus(message || "Automação iniciada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
+      });
+      body.querySelector("[data-action='current']").addEventListener("click", function () {
+        try { Promise.resolve(config.onCurrent && config.onCurrent()).then(function (message) { setStatus(message || "Exportação iniciada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
+      });
+      body.querySelector("[data-action='pause']").addEventListener("click", function () {
+        if (config.onPause) config.onPause();
+        setStatus("Automação pausada. Você poderá retomar pela mesma tela.", false);
+        refreshProgress();
+      });
+      body.querySelector("[data-action='resume']").addEventListener("click", function () {
+        try { Promise.resolve(config.onResume && config.onResume()).then(function (message) { setStatus(message || "Retomada solicitada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
+      });
+      body.querySelector("[data-action='takeover']").addEventListener("click", function () {
+        try { Promise.resolve(config.onTakeover && config.onTakeover()).then(function (message) { setStatus(message || "Execução assumida.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
+      });
+      body.querySelector("[data-action='diagnostics']").addEventListener("click", function () {
+        try {
+          var count = config.onDownloadDiagnostics ? config.onDownloadDiagnostics() : 0;
+          setStatus("Log detalhado baixado com " + String(count || 0) + " eventos.", false);
+        } catch (error) { setStatus(error.message || error, true); }
+      });
+    }
+
+    function libraryView() {
+      var entries = typeof config.listLibrary === "function" ? config.listLibrary() : [];
+      var groups = entries.reduce(function (result, entry) {
+        var group = entry.group || "Sem grupo";
+        (result[group] = result[group] || []).push(entry);
+        return result;
+      }, {});
+      body.innerHTML = "<div class=\"hint\">Os arquivos permanecem nesta biblioteca até você removê-los. Baixe Excel ou HTML interativo por caderno.</div><div class=\"hint\" id=\"tec-progress\"></div><div id=\"tec-library-tree\"></div><div class=\"status\"></div>";
+      var tree = body.querySelector("#tec-library-tree");
+      Object.keys(groups).sort(function (left, right) { return left.localeCompare(right, "pt-BR"); }).forEach(function (group) {
+        var details = documentNode.createElement("details");
+        details.open = true;
+        var summary = documentNode.createElement("summary");
+        summary.textContent = group + " (" + groups[group].length + ")";
+        details.appendChild(summary);
+        groups[group].forEach(function (entry) {
+          var item = documentNode.createElement("div");
+          item.className = "entry";
+          var open = button(documentNode, entry.title || entry.code, "entry-open");
+          open.addEventListener("click", function () { if (config.onSelect) config.onSelect(entry.id); });
+          item.appendChild(open);
+          var info = documentNode.createElement("small");
+          info.textContent = String(entry.questions ? entry.questions.length : entry.totalQuestions || 0) + " questões · " + String(entry.parts ? entry.parts.length : 0) + " parte(s)";
+          item.appendChild(info);
+          var actions = documentNode.createElement("div");
+          actions.className = "entry-actions";
+          var xlsx = button(documentNode, "Excel", "");
+          var html = button(documentNode, "HTML", "secondary");
+          var remove = button(documentNode, "Remover", "danger");
+          xlsx.addEventListener("click", function () { if (config.onDownloadXlsx) config.onDownloadXlsx(entry.id); });
+          html.addEventListener("click", function () { if (config.onDownloadHtml) config.onDownloadHtml(entry.id); });
+          remove.addEventListener("click", function () { if (config.onRemove) config.onRemove(entry.id); libraryView(); });
+          [xlsx, html, remove].forEach(function (node) { actions.appendChild(node); });
+          item.appendChild(actions);
+          details.appendChild(item);
+        });
+        tree.appendChild(details);
+      });
+      if (!entries.length) tree.innerHTML = "<div class=\"empty\">Ainda não há cadernos exportados.</div>";
+    }
+
+    function render() {
+      Array.from(panel.querySelectorAll("[data-tab]")).forEach(function (tab) {
+        tab.classList.toggle("active", tab.getAttribute("data-tab") === activeTab);
+      });
+      if (activeTab === "library") libraryView(); else automationView();
+      refreshProgress();
+    }
+    launcher.addEventListener("click", function () { panel.classList.add("open"); launcher.style.display = "none"; render(); });
+    panel.querySelector("[data-action='close']").addEventListener("click", function () { panel.classList.remove("open"); launcher.style.display = "block"; });
+    Array.from(panel.querySelectorAll("[data-tab]")).forEach(function (tab) {
+      tab.addEventListener("click", function () { activeTab = tab.getAttribute("data-tab"); render(); });
+    });
+    if (typeof setInterval === "function") setInterval(refreshProgress, 1000);
+    refreshProgress();
+    return { panel: panel, open: function () { panel.classList.add("open"); launcher.style.display = "none"; render(); }, refresh: render, setStatus: setStatus };
+  }
+
+  return { createPanel: createPanel };
+});
+
 // ---- entry.cjs ----
 (function (root) {
   "use strict";
+
+  function suppressNativePrintOnOutputPage(rootNode) {
+    var path = String(rootNode.location && rootNode.location.pathname || "");
+    if (!/\/questoes\/cadernos\/\d+\/imprimir/i.test(path)) return false;
+    var pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : rootNode;
+    var blockedPrint = function () { return undefined; };
+    try { pageWindow.print = blockedPrint; } catch (_) {}
+
+    // Tampermonkey pode executar o userscript em um mundo isolado. Este
+    // pequeno script instala o mesmo bloqueio no mundo da página antes que
+    // js/common/imprimir.js possa chamar window.print().
+    var documentNode = rootNode.document;
+    if (documentNode && documentNode.createElement && documentNode.documentElement) {
+      try {
+        var bridge = documentNode.createElement("script");
+        bridge.textContent = "(function(){var blocked=function(){return undefined;};try{Object.defineProperty(window,'print',{configurable:true,writable:true,value:blocked});}catch(_){window.print=blocked;}})();";
+        documentNode.documentElement.appendChild(bridge);
+        bridge.remove();
+      } catch (_) {}
+    }
+    return true;
+  }
 
   function start() {
     var modules = root.TecConcursosModules;
     var documentNode = root.document;
     if (!modules || !documentNode || !documentNode.body) return;
     if (!modules.selectors.isSupportedPage(root.location)) return;
-    if (documentNode.getElementById("tec-scraper-panel")) return;
 
     var storage = modules.storage.createStorage(root);
-    var collector = modules.collector.createCollector({
-      document: documentNode,
-      storage: storage,
-      parser: modules.parseQuestion,
-      api: modules.api,
-      apiOptions: { retryCount: 3, retryDelayMs: 1000 },
-      navigation: modules.navigation,
-      format: modules.format,
-      timing: modules.timing,
-      waitTimeoutMs: 15000
-    });
-    var ui = modules.ui.createPanel(documentNode, {
-      onStart: async function (limit) {
-        ui.setRunning(true);
-        try {
-          await collector.start({
-            limit: limit,
-            onStatus: function (message) {
-              ui.setStatus(message, false);
-              ui.setCount(collector.getQuestions().length);
-            }
-          });
-          ui.setStatus("Coleta finalizada ou pausada.", false);
-        } catch (error) {
-          ui.setStatus("Falha: " + String(error && error.message || error), true);
-        } finally {
-          ui.setCount(collector.getQuestions().length);
+    var pageKind = modules.selectors.getPageKind(root.location);
+    if ((pageKind === "caderno" || pageKind === "filtro") && !documentNode.getElementById("tec-scraper-panel")) {
+      var collector = modules.collector.createCollector({
+        document: documentNode,
+        storage: storage,
+        parser: modules.parseQuestion,
+        api: modules.api,
+        apiOptions: { retryCount: 3, retryDelayMs: 1000 },
+        navigation: modules.navigation,
+        format: modules.format,
+        timing: modules.timing,
+        waitTimeoutMs: 15000
+      });
+      var ui = modules.ui.createPanel(documentNode, {
+        onStart: async function (limit) {
+          ui.setRunning(true);
+          try {
+            await collector.start({
+              limit: limit,
+              onStatus: function (message) {
+                ui.setStatus(message, false);
+                ui.setCount(collector.getQuestions().length);
+              }
+            });
+            ui.setStatus("Coleta finalizada ou pausada.", false);
+          } catch (error) {
+            ui.setStatus("Falha: " + String(error && error.message || error), true);
+          } finally {
+            ui.setCount(collector.getQuestions().length);
+            ui.setRunning(false);
+          }
+        },
+        onStop: function () {
+          collector.stop();
+          ui.setStatus("Pausa solicitada.", false);
           ui.setRunning(false);
+        },
+        onExportText: function () {
+          var count = collector.exportText(documentNode);
+          ui.setStatus(count + " questão(ões) exportada(s) para TXT.", false);
+        },
+        onExportJson: function () {
+          var count = collector.exportJson(documentNode);
+          ui.setStatus(count + " questão(ões) exportada(s) para JSON.", false);
+        },
+        onClear: function () {
+          if (!root.confirm || root.confirm("Limpar as questões salvas?")) {
+            collector.clear();
+            ui.setCount(0);
+            ui.setStatus("Armazenamento limpo.", false);
+          }
         }
+      });
+      if (ui) ui.setStatus("Pronto nesta página de " + modules.selectors.getPageKind(root.location) + ".", false);
+    }
+
+    if (!modules.library || !modules.automation || !modules.libraryUi || documentNode.getElementById("tec-library-panel")) return;
+    var library = modules.library.createLibrary(storage);
+    var automation = modules.automation.createAutomation({ root: root, document: documentNode, storage: storage, library: library });
+    var libraryUi = modules.libraryUi.createPanel(documentNode, {
+      getPlan: automation.readPlan,
+      getStatus: automation.status,
+      getProgress: automation.getProgress,
+      defaultFolderId: automation.defaultFolderId,
+      onFolderIdChange: automation.saveFolderId,
+      listLibrary: library.list,
+      onImport: function (rawPlan) {
+        var plan = modules.plan.parsePlanText(rawPlan);
+        automation.savePlan(plan);
+        return plan.matters.length + " matéria(s) salva(s) no plano.";
       },
-      onStop: function () {
-        collector.stop();
-        ui.setStatus("Pausa solicitada.", false);
-        ui.setRunning(false);
+      onCreate: function (folderId) {
+        if (root.confirm && !root.confirm("Criar cadernos e iniciar a exportação do plano? O processo poderá ser pausado e retomado.")) return "Operação cancelada.";
+        return automation.startCreation(folderId);
       },
-      onExportText: function () {
-        var count = collector.exportText(documentNode);
-        ui.setStatus(count + " questão(ões) exportada(s) para TXT.", false);
+      onCurrent: function () {
+        if (root.confirm && !root.confirm("Exportar este caderno para a biblioteca local?")) return "Operação cancelada.";
+        return automation.startCurrentCaderno();
       },
-      onExportJson: function () {
-        var count = collector.exportJson(documentNode);
-        ui.setStatus(count + " questão(ões) exportada(s) para JSON.", false);
+      onPause: automation.pause,
+      onResume: automation.resumePaused,
+      onTakeover: automation.takeover,
+      onError: automation.fail,
+      onDownloadDiagnostics: function () {
+        var diagnostics = automation.getDiagnostics();
+        var stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        var filename = "tecconcursos-log-detalhado-" + stamp + ".json";
+        modules.library.downloadBlob(documentNode, filename, new Blob([JSON.stringify(diagnostics, null, 2)], { type: "application/json;charset=utf-8" }));
+        return diagnostics.progress.events.length;
       },
-      onClear: function () {
-        if (!root.confirm || root.confirm("Limpar as questões salvas?")) {
-          collector.clear();
-          ui.setCount(0);
-          ui.setStatus("Armazenamento limpo.", false);
-        }
+      onSelect: function () {},
+      onDownloadXlsx: function (id) {
+        var entry = library.get(id);
+        if (!entry) return;
+        modules.library.downloadBlob(documentNode, modules.library.outputBaseName(entry) + ".xlsx", modules.library.buildXlsxBlob(entry));
+      },
+      onDownloadHtml: function (id) {
+        var entry = library.get(id);
+        if (!entry) return;
+        modules.library.downloadBlob(documentNode, modules.library.outputBaseName(entry) + ".html", new Blob([modules.library.buildInteractiveHtml(entry)], { type: "text/html;charset=utf-8" }));
+      },
+      onRemove: function (id) {
+        if (!root.confirm || root.confirm("Remover este caderno da biblioteca local?")) library.remove(id);
       }
     });
-    if (ui) ui.setStatus("Pronto nesta página de " + modules.selectors.getPageKind(root.location) + ".", false);
+    root.setTimeout(function () {
+      Promise.resolve(automation.resume()).then(function (message) {
+        if (libraryUi) libraryUi.setStatus(message || automation.status(), false);
+      }).catch(function (error) {
+        automation.fail(error);
+        if (libraryUi) libraryUi.setStatus("Falha na automação: " + String(error && error.message || error), true);
+      });
+    }, 300);
   }
 
+  suppressNativePrintOnOutputPage(root);
   if (root.document && root.document.readyState === "loading") {
     root.document.addEventListener("DOMContentLoaded", start, { once: true });
   } else {
