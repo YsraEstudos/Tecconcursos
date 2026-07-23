@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      2.5.11
+// @version      2.5.12
 // @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.
 // @author       Codex
 // @match        https://www.tecconcursos.com.br/questoes/cadernos/*
@@ -2509,6 +2509,20 @@
   "use strict";
 
   function createOrchestrator(context) {
+    function openFilterForPendingCreation(state) {
+      var creation = state && state.creation;
+      var filterUrl = creation && String(creation.filterUrl || "");
+      if (!filterUrl) throw new Error("A execução pendente não possui a URL de filtros da pasta.");
+      context.persistProgress(state, {
+        phase: "opening-filter",
+        message: "Abrindo a página de filtros para retomar a criação do próximo caderno.",
+        matterIndex: creation.index,
+        mattersTotal: creation.plan && creation.plan.matters ? creation.plan.matters.length : 0
+      });
+      if (context.root && context.root.location) context.root.location.href = filterUrl;
+      return "Abrindo a página de filtros para retomar a criação do caderno.";
+    }
+
     async function resume() {
       var state = context.readState();
       if (!state.running) return context.status();
@@ -2542,6 +2556,9 @@
         });
       }
       if (context.isCadernoPage(context.root) && state.export && state.export.job) return context.print.submitCurrentRange(state);
+      if (state.creation && state.creation.phase === "prepare" && state.creation.filterUrl && !context.isFilterPage(context.root)) {
+        return openFilterForPendingCreation(state);
+      }
       if (context.isFilterPage(context.root) && state.creation && state.creation.phase === "prepare") return context.caderno.createNextCaderno(state);
       return context.status();
     }
@@ -3391,9 +3408,9 @@
     launcher.appendChild(launcherStatus);
     var panel = documentNode.createElement("section");
     panel.id = "tec-library-panel";
-    panel.dataset.tecScraperVersion = "2.5.11";
-    launcher.dataset.tecScraperVersion = "2.5.11";
-    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.5.11</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button></div><div class=\"body\"></div>";
+    panel.dataset.tecScraperVersion = "2.5.12";
+    launcher.dataset.tecScraperVersion = "2.5.12";
+    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.5.12</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button></div><div class=\"body\"></div>";
     documentNode.body.appendChild(launcher);
     documentNode.body.appendChild(panel);
     var body = panel.querySelector(".body");
@@ -3486,9 +3503,12 @@
         try { Promise.resolve(config.onCurrent && config.onCurrent()).then(function (message) { setStatus(message || "Exportação iniciada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
       });
       body.querySelector("[data-action='pause']").addEventListener("click", function () {
-        if (config.onPause) config.onPause();
-        setStatus("Automação pausada. Você poderá retomar pela mesma tela.", false);
-        refreshProgress();
+        try {
+          Promise.resolve(config.onPause && config.onPause()).then(function (message) {
+            setStatus(message || "Automação pausada. Você poderá retomar pela mesma tela.", false);
+            refreshProgress();
+          }).catch(handleAutomationError);
+        } catch (error) { handleAutomationError(error); }
       });
       body.querySelector("[data-action='resume']").addEventListener("click", function () {
         try { Promise.resolve(config.onResume && config.onResume()).then(function (message) { setStatus(message || "Retomada solicitada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
