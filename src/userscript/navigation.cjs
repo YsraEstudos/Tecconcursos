@@ -42,9 +42,12 @@
       var MutationObserverCtor = documentNode && documentNode.defaultView
         ? documentNode.defaultView.MutationObserver
         : typeof MutationObserver !== "undefined" ? MutationObserver : null;
-      if (MutationObserverCtor && documentNode && documentNode.body) {
+      var observationRoot = documentNode && typeof documentNode.querySelector === "function"
+        ? documentNode.querySelector("#caderno") || documentNode.querySelector("#prova-conteudo") || documentNode.body
+        : documentNode && documentNode.body;
+      if (MutationObserverCtor && observationRoot) {
         observer = new MutationObserverCtor(check);
-        observer.observe(documentNode.body, { childList: true, subtree: true, characterData: true });
+        observer.observe(observationRoot, { childList: true, subtree: true, characterData: true });
       }
       interval = setInterval(check, pollMs);
       timer = setTimeout(function () { finish(false); }, timeoutMs);

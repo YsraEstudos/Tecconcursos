@@ -82,6 +82,11 @@
     return extractId(textOf(bodyNode));
   }
 
+  function extractQuestionIdentity(documentNode) {
+    var rootNode = selectors.findQuestionRoot(documentNode);
+    return rootNode ? extractQuestionId(rootNode, null) : "";
+  }
+
   function extractAlternatives(rootNode) {
     var items = all(rootNode, [
       ".questao-enunciado-alternativas > li",
@@ -159,6 +164,7 @@
     normalizeLine: normalizeLine,
     normalizeBlock: normalizeBlock,
     extractQuestionId: extractQuestionId,
+    extractQuestionIdentity: extractQuestionIdentity,
     extractAlternatives: extractAlternatives,
     extractQuestionIndex: extractQuestionIndex,
     parseQuestionFromDocument: parseQuestionFromDocument

@@ -69,6 +69,42 @@ test("coleta duas questões e aplica delay aleatório antes do clique", async ()
   assert.equal(result.addedThisRun, 2);
   assert.deepEqual(saved.map((item) => item.id), ["3702591", "3702592"]);
   assert.equal(clicks, 1);
-  assert.deepEqual(delays, [[4000, 8000], 5600]);
+  assert.deepEqual(delays, [[6000, 10000], 5600]);
   assert.ok(statuses.some((message) => message.includes("5.6s")));
+});
+
+test("carrega as questões do storage uma vez e usa o cache durante a execução", async () => {
+  let currentId = "q-1";
+  let reads = 0;
+  const saved = [];
+  const storage = {
+    read: () => {
+      reads += 1;
+      return saved.slice();
+    },
+    write: (_key, value) => {
+      saved.splice(0, saved.length, ...value);
+    },
+    remove: () => { saved.splice(0, saved.length); }
+  };
+  const parser = {
+    parseQuestionFromDocument: () => ({ id: currentId, options: [] })
+  };
+  const navigation = {
+    clickNext: () => { currentId = "q-2"; return true; },
+    waitForQuestionChange: async () => true
+  };
+  const collector = collectorModule.createCollector({
+    document: { querySelectorAll: () => [{ disabled: false, hidden: false, offsetParent: {} }] },
+    storage,
+    parser,
+    navigation,
+    timing: { randomInt: () => 4000, sleep: async () => true },
+    format: { downloadText() {}, downloadJson() {} }
+  });
+
+  await collector.start({ limit: 2 });
+
+  assert.equal(reads, 1);
+  assert.equal(collector.getQuestions().length, 2);
 });

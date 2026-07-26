@@ -10,7 +10,8 @@
 
   var PAGE_PATTERNS = {
     caderno: /\/questoes\/cadernos(?:\/|$)/i,
-    filtro: /\/questoes\/filtrar(?:\/|$)/i
+    filtro: /\/questoes\/filtrar(?:\/|$)/i,
+    pasta: /\/questoes\/pastas(?:\/|$)/i
   };
 
   var QUESTION_ROOT_SELECTORS = [
@@ -47,6 +48,7 @@
     var path = getPath(locationLike);
     if (PAGE_PATTERNS.caderno.test(path)) return "caderno";
     if (PAGE_PATTERNS.filtro.test(path)) return "filtro";
+    if (PAGE_PATTERNS.pasta.test(path)) return "pasta";
     return "unknown";
   }
 

@@ -61,3 +61,15 @@ test("extrai o contrato real da questão do caderno", () => {
     extractedAt: "2026-07-21T12:00:00.000Z"
   });
 });
+
+test("extrai a identidade da questão sem parsear enunciado ou alternativas", () => {
+  const questionRoot = node("", {
+    ".id-questao": node("#3702591")
+  });
+  const documentNode = {
+    body: node("texto extenso que não precisa ser lido"),
+    querySelector: (selector) => selector === "#caderno .questao" ? questionRoot : null
+  };
+
+  assert.equal(parser.extractQuestionIdentity(documentNode), "3702591");
+});

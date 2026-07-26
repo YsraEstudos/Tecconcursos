@@ -5,6 +5,8 @@ const selectors = require("../../src/userscript/selectors.cjs");
 test("reconhece a rota de caderno e a rota de filtros", () => {
   assert.equal(selectors.getPageKind({ pathname: "/questoes/cadernos/95080137" }), "caderno");
   assert.equal(selectors.getPageKind({ pathname: "/questoes/filtrar" }), "filtro");
+  assert.equal(selectors.getPageKind({ pathname: "/questoes/pastas/6423024" }), "pasta");
+  assert.equal(selectors.isSupportedPage({ pathname: "/questoes/pastas/6423024" }), true);
   assert.equal(selectors.getPageKind({ pathname: "/questoes/busca" }), "unknown");
 });
 

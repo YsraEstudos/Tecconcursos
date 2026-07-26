@@ -28,18 +28,23 @@
     var timing = config.timing;
     var storageKey = config.storageKey || "tec_questions_data_v2";
     var waitTimeoutMs = Number(config.waitTimeoutMs) > 0 ? Number(config.waitTimeoutMs) : 15000;
-    var minClickDelayMs = Number(config.minClickDelayMs) > 0 ? Number(config.minClickDelayMs) : 4000;
-    var maxClickDelayMs = Number(config.maxClickDelayMs) > 0 ? Number(config.maxClickDelayMs) : 8000;
+    var minClickDelayMs = Number(config.minClickDelayMs) > 0 ? Number(config.minClickDelayMs) : 6000;
+    var maxClickDelayMs = Number(config.maxClickDelayMs) > 0 ? Number(config.maxClickDelayMs) : 10000;
     var apiOptions = config.apiOptions || { retryCount: 3, retryDelayMs: 1000 };
     var running = false;
     var runToken = 0;
+    var questionsCache = null;
 
     function readQuestions() {
-      var value = storage.read(storageKey, []);
-      return Array.isArray(value) ? value : [];
+      if (!questionsCache) {
+        var value = storage.read(storageKey, []);
+        questionsCache = Array.isArray(value) ? value : [];
+      }
+      return questionsCache;
     }
 
     function writeQuestions(questions) {
+      questionsCache = Array.isArray(questions) ? questions : [];
       storage.write(storageKey, questions);
     }
 
@@ -168,10 +173,12 @@
           var changed = await navigation.waitForQuestionChange(
             documentNode,
             previousId,
-            function () {
-              var current = parser.parseQuestionFromDocument(documentNode);
-              return current ? current.id : "";
-            },
+            typeof parser.extractQuestionIdentity === "function"
+              ? function () { return parser.extractQuestionIdentity(documentNode); }
+              : function () {
+                var current = parser.parseQuestionFromDocument(documentNode);
+                return current ? current.id : "";
+              },
             {
               timeoutMs: waitTimeoutMs,
               isCancelled: function () { return !running || token !== runToken; }
@@ -198,6 +205,7 @@
     }
 
     function clear() {
+      questionsCache = [];
       storage.remove(storageKey);
     }
 

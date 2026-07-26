@@ -221,7 +221,9 @@ Este contexto reúne apenas contratos observados no código deste projeto, no HT
 - As partes são consolidadas por identificador/número original; repetir uma parte não pode duplicar questões.
 - A Biblioteca TC organiza os resultados por grupo do plano e permite baixar Excel e HTML.
 - O Excel é XLSX real, com cabeçalhos, linhas de questões, metadados e autofiltro.
-- O HTML interativo mantém respostas, alternativas anuladas por duplo clique, salto para questão, filtros e histórico no `localStorage` do próprio documento. A reabertura deve hidratar o estado; reiniciar é uma ação explícita.
+- O Excel deve manter uma coluna `Imagem N` por posição de imagem; imagens PNG/JPEG/GIF obtidas com as credenciais da página são incorporadas nas partes OOXML de mídia/desenho e a origem permanece como fallback quando a incorporação falhar.
+- O HTML interativo usa tema escuro, mantém respostas, mostra feedback de acerto/erro quando `question.answer` existe, marca a alternativa correta, permite alternativas anuladas por duplo clique, salto para questão, filtros e histórico no `localStorage` do próprio documento. A reabertura deve hidratar o estado; reiniciar é uma ação explícita.
+- Fragmentos HTML de enunciado e alternativas devem preservar imagens e transformar URLs relativas em absolutas antes de entrar na biblioteca; não remover imagens durante a sanitização.
 - Exportações e logs devem omitir segredos e não devem enviar dados para serviço externo.
 
 ## Estado, retomada e concorrência
@@ -235,6 +237,8 @@ Eventos importantes registram horário, `runId`, aba, fase, caderno, parte, inte
 - Uma aba sem o lease não deve pausar, retomar ou imprimir a execução de outra aba.
 - O estado persistido deve preservar partes concluídas, próximo intervalo, índice do MAT, URL de filtros e diagnóstico do erro.
 - Em 23/07/2026, o log mostrou que os botões Pausar/Retomar eram executados, mas Retomar não tinha uma transição quando a página estava em `/questoes/pastas/{id}`. A correção passou a registrar `opening-filter` e reabrir a `filterUrl` salva antes de continuar.
+- O userscript registra `GM_registerMenuCommand`/`GM_unregisterMenuCommand` para expor `⏹ Parar automação` e `▶ Retomar automação` no menu de comandos do Tampermonkey; o menu interno de gerenciamento com `Edit`/`Delete` não é extensível pelo script.
+- O comando reutiliza `automation.pause()`/`automation.resumePaused()` e os fluxos consultam `ensureRunning` antes de cliques e navegações críticas. Uma navegação já iniciada não é cancelada, mas a próxima transição não deve ocorrer depois que a pausa for persistida.
 
 ## Diagnóstico de falhas
 

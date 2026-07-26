@@ -9,7 +9,12 @@
     "extract-cookies": "node scripts/extract-cookies.cjs",
     "build:userscript": "node scripts/build-userscript.cjs",
     "test": "node scripts/run-tests.cjs",
-    "test:userscript": "node scripts/run-tests.cjs"
+    "test:userscript": "node scripts/run-tests.cjs",
+    "test:coverage": "node scripts/run-coverage.cjs",
+    "test:e2e": "node --test tests/e2e/automation-flow.test.cjs tests/e2e/library-html.test.cjs",
+    "lint": "node scripts/lint-userscript.cjs",
+    "check": "node scripts/check-quality.cjs",
+    "browser": "node scripts/open-browser-devtools.cjs"
   },
   "engines": {
     "node": ">=18.0.0"

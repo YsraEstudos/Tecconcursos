@@ -10,19 +10,25 @@ const metadata = [
   "// ==UserScript==",
   "// @name         TecConcursos - Coletor de Questões Pro",
   "// @namespace    https://github.com/YsraEstudos/Tecconcursos",
-  "// @version      2.3.0",
-  "// @description  Coleta questões, lê numeroAlternativaCorreta pela API, exporta TXT/JSON e aguarda 4-8 segundos aleatórios entre cliques.",
+  "// @version      2.5.15",
+  "// @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.",
   "// @author       Codex",
   "// @match        https://www.tecconcursos.com.br/questoes/cadernos/*",
   "// @match        https://tecconcursos.com.br/questoes/cadernos/*",
   "// @match        https://www.tecconcursos.com.br/questoes/filtrar*",
   "// @match        https://tecconcursos.com.br/questoes/filtrar*",
+  "// @match        https://www.tecconcursos.com.br/questoes/pastas*",
+  "// @match        https://tecconcursos.com.br/questoes/pastas*",
   "// @updateURL    https://raw.githubusercontent.com/YsraEstudos/Tecconcursos/main/tecconcursos-scraper.user.js",
   "// @downloadURL  https://raw.githubusercontent.com/YsraEstudos/Tecconcursos/main/tecconcursos-scraper.user.js",
-  "// @run-at       document-idle",
+  "// @run-at       document-start",
   "// @grant        GM_getValue",
   "// @grant        GM_setValue",
   "// @grant        GM_deleteValue",
+  "// @grant        GM_registerMenuCommand",
+  "// @grant        GM_unregisterMenuCommand",
+  "// @grant        GM_addElement",
+  "// @grant        unsafeWindow",
   "// @noframes",
   "// ==/UserScript=="
 ].join("\n");
@@ -35,17 +41,40 @@ const moduleOrder = [
     "parse-question.cjs",
     "format.cjs",
     "storage.cjs",
+    "plan.cjs",
+    "automation-lock.cjs",
+    "automation-dom.cjs",
     "timing.cjs",
+    "library.cjs",
+    "automation-state.cjs",
+    "automation-filters.cjs",
+    "automation-print.cjs",
+    "automation-output.cjs",
+    "automation-caderno.cjs",
+    "automation-diagnostics.cjs",
+    "automation-orchestrator.cjs",
+    "automation.cjs",
+    "ai-context.cjs",
     "navigation.cjs",
     "collector.cjs",
     "ui.cjs",
+    "library-ui.cjs",
+    "automation-controls.cjs",
+    "print-blocker.cjs",
+    "tampermonkey-menu.cjs",
     "entry.cjs"
   ].map((name) => ({ dir: sourceDir, name }))
 ];
 
 const modules = moduleOrder.map(({ dir, name }) => {
   const filePath = path.join(dir, name);
-  return "// ---- " + name + " ----\n" + fs.readFileSync(filePath, "utf8").trim();
+  let source = fs.readFileSync(filePath, "utf8");
+  if (name === "ai-context.cjs") {
+    const contextPath = path.join(sourceDir, "AI_CONTEXT.md");
+    const context = fs.readFileSync(contextPath, "utf8");
+    source = source.replace('"__TEC_AI_CONTEXT__"', JSON.stringify(context));
+  }
+  return "// ---- " + name + " ----\n" + source.trim();
 });
 
 const bundle = metadata + "\n\n(function () {\n" + modules.join("\n\n") + "\n})();\n";

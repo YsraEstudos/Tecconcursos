@@ -1,0 +1,335 @@
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.libraryUi = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  function button(documentNode, label, className) {
+    var item = documentNode.createElement("button");
+    item.type = "button";
+    item.textContent = label;
+    item.className = className || "";
+    return item;
+  }
+
+  function completionSummary(plan, entries, progress) {
+    var matters = plan && Array.isArray(plan.matters) ? plan.matters : [];
+    var savedEntries = Array.isArray(entries) ? entries : [];
+    var byCode = savedEntries.reduce(function (result, entry) {
+      var code = String(entry && entry.code || "").trim().toUpperCase();
+      if (code) result[code] = entry;
+      return result;
+    }, {});
+    return matters.map(function (matter, index) {
+      var code = String(matter && matter.code || "").trim().toUpperCase();
+      var entry = byCode[code];
+      var savedParts = entry && Array.isArray(entry.parts) ? entry.parts.length : 0;
+      var savedQuestions = entry && Array.isArray(entry.questions) ? entry.questions.length : 0;
+      var totalQuestions = Number(entry && entry.totalQuestions) || 0;
+      var expectedParts = totalQuestions ? Math.ceil(totalQuestions / 200) : 0;
+      var complete = Boolean(entry && ((totalQuestions > 0 && savedQuestions >= totalQuestions) || (expectedParts > 0 && savedParts >= expectedParts)));
+      var current = Boolean(progress && code && String(progress.matterCode || "").trim().toUpperCase() === code);
+      var status = complete ? "completed" : current && progress.phase === "error" ? "failed" : current ? "active" : entry ? "saved" : "pending";
+      return {
+        code: code,
+        title: String(matter && matter.title || code || "MAT sem título"),
+        index: index,
+        status: status,
+        savedParts: savedParts,
+        savedQuestions: savedQuestions,
+        totalQuestions: totalQuestions
+      };
+    });
+  }
+
+  function createPanel(documentNode, handlers) {
+    if (documentNode.getElementById("tec-library-panel")) return null;
+    var config = handlers || {};
+    var style = documentNode.createElement("style");
+    style.textContent = "#tec-library-launcher{position:fixed;left:18px;bottom:18px;z-index:2147483646;border:0;border-radius:999px;background:#1d4ed8;color:#fff;padding:12px 16px;font:700 14px system-ui;box-shadow:0 8px 22px #1e3a8a66;cursor:pointer}#tec-library-panel{position:fixed;left:18px;bottom:18px;z-index:2147483647;width:min(460px,calc(100vw - 36px));max-height:min(720px,calc(100vh - 36px));display:none;flex-direction:column;overflow:hidden;border-radius:16px;background:#f8fafc;color:#172554;box-shadow:0 18px 55px #0f172a55;font:14px system-ui}#tec-library-panel.open{display:flex}#tec-library-panel .head{display:flex;align-items:center;gap:10px;padding:15px 16px;background:linear-gradient(135deg,#1d4ed8,#0f766e);color:#fff}#tec-library-panel .head strong{font-size:16px}#tec-library-panel .head button{margin-left:auto;border:0;background:#ffffff22;color:#fff;border-radius:8px;padding:6px 9px;cursor:pointer}#tec-library-panel .tabs{display:flex;gap:5px;padding:10px 12px;border-bottom:1px solid #dbeafe;background:#fff;overflow-x:auto}#tec-library-panel .tabs button{border:0;border-radius:7px;background:#eff6ff;color:#1e3a8a;padding:7px 10px;cursor:pointer;font-weight:700;white-space:nowrap}#tec-library-panel .tabs button.active{background:#1d4ed8;color:#fff}#tec-library-panel .body{overflow:auto;padding:14px 16px}#tec-library-panel label{display:block;margin:8px 0 4px;font-weight:700}#tec-library-panel textarea,#tec-library-panel input{width:100%;box-sizing:border-box;border:1px solid #bfdbfe;border-radius:8px;padding:8px;font:13px ui-monospace,Consolas,monospace}#tec-library-panel textarea{min-height:106px;resize:vertical}#tec-library-panel .actions{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}#tec-library-panel .actions button,#tec-library-panel .entry-actions button{border:0;border-radius:8px;background:#1d4ed8;color:#fff;padding:8px 10px;font-weight:700;cursor:pointer}#tec-library-panel .actions button.secondary,#tec-library-panel .entry-actions button.secondary{background:#475569}#tec-library-panel .actions button.danger,#tec-library-panel .entry-actions button.danger{background:#b91c1c}#tec-library-panel .status{min-height:36px;color:#0f766e;font-size:13px;line-height:1.35}#tec-library-panel .hint{padding:10px;border-radius:9px;background:#eff6ff;color:#1e3a8a;font-size:13px;line-height:1.4}#tec-library-panel details{margin:8px 0;border:1px solid #dbeafe;border-radius:9px;background:#fff}#tec-library-panel summary{cursor:pointer;padding:9px 10px;font-weight:700}#tec-library-panel .entry{padding:8px 10px;border-top:1px solid #eff6ff}#tec-library-panel .entry button.entry-open{border:0;background:transparent;color:#1d4ed8;padding:0;text-align:left;font:700 13px system-ui;cursor:pointer}#tec-library-panel .entry small{display:block;margin-top:3px;color:#64748b}#tec-library-panel .entry-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}#tec-library-panel .entry-actions button{font-size:12px;padding:6px 8px}#tec-library-panel .ai-context{margin:0;max-height:500px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid #dbeafe;border-radius:9px;background:#fff;color:#0f172a;padding:12px;font:12px/1.5 ui-monospace,Consolas,monospace}#tec-library-panel .ai-context-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin:10px 0}";
+    documentNode.head.appendChild(style);
+    style.textContent += "#tec-library-panel .completion-summary{margin:10px 0;border:1px solid #dbeafe;border-radius:9px;background:#fff;padding:10px}#tec-library-panel .completion-summary strong{display:block;margin-bottom:7px}#tec-library-panel .completion-summary ol{margin:0;padding-left:24px}#tec-library-panel .completion-summary li{padding:3px 0;color:#334155}#tec-library-panel .completion-summary li.completed{color:#047857}#tec-library-panel .completion-summary li.failed{color:#b91c1c}#tec-library-panel .completion-summary li.active{color:#1d4ed8}";
+
+    var launcher = button(documentNode, "", "");
+    launcher.id = "tec-library-launcher";
+    var launcherLabel = documentNode.createElement("span");
+    launcherLabel.textContent = "Biblioteca TC";
+    var launcherStatus = documentNode.createElement("small");
+    launcherStatus.style.marginLeft = "8px";
+    launcherStatus.style.fontWeight = "700";
+    launcherStatus.style.opacity = "0.92";
+    launcher.appendChild(launcherLabel);
+    launcher.appendChild(launcherStatus);
+    var panel = documentNode.createElement("section");
+    panel.id = "tec-library-panel";
+    panel.dataset.tecScraperVersion = "2.5.15";
+    launcher.dataset.tecScraperVersion = "2.5.15";
+    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.5.15</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
+    documentNode.body.appendChild(launcher);
+    documentNode.body.appendChild(panel);
+    var body = panel.querySelector(".body");
+    var activeTab = "automation";
+    var progressTimer = null;
+    var progressTimerMs = 0;
+    var refreshFrame = null;
+    var refreshIncludesSummary = false;
+
+    function progressSnapshot() {
+      return typeof config.getProgress === "function" ? (config.getProgress() || {}) : {};
+    }
+
+    function progressLabel(progress) {
+      if (progress.lockedByOtherTab) return "⏸ outra aba";
+      if (progress.running) return progress.stale ? "⚠ sem atividade" : "● trabalhando";
+      if (progress.phase === "error") return "✖ erro";
+      if (progress.phase === "paused") return "Ⅱ pausado";
+      if (progress.phase === "completed") return "✓ concluído";
+      return "";
+    }
+
+    function progressDetails(progress) {
+      var message = String(progress.message || (progress.running ? "Processo em andamento." : "Pronto."));
+      var details = [];
+      if (progress.running && progress.mattersTotal) details.push("caderno " + String((Number(progress.matterIndex) || 0) + 1) + "/" + progress.mattersTotal);
+      if (progress.running && progress.rangesTotal) details.push("parte " + String((Number(progress.rangeIndex) || 0) + 1) + "/" + progress.rangesTotal);
+      if (progress.updatedAt) {
+        var time = new Date(progress.updatedAt);
+        if (!Number.isNaN(time.getTime())) details.push("última atividade " + time.toLocaleTimeString("pt-BR"));
+      }
+      if (progress.events && progress.events.length) details.push(String(progress.events.length) + " eventos registrados");
+      if (progress.stale) details.unshift("ATENÇÃO: sem atividade há " + Math.max(1, Math.floor((progress.ageMs || 0) / 1000)) + "s");
+      if (progress.lockedByOtherTab) details.unshift("execução pertence a outra aba");
+      return details.length ? message + " · " + details.join(" · ") : message;
+    }
+
+    function scheduleProgressRefresh(includeSummary) {
+      refreshIncludesSummary = refreshIncludesSummary || includeSummary !== false;
+      if (refreshFrame != null) return;
+      var pageWindow = documentNode.defaultView || {};
+      var request = typeof pageWindow.requestAnimationFrame === "function"
+        ? pageWindow.requestAnimationFrame.bind(pageWindow)
+        : function (callback) { return setTimeout(callback, 0); };
+      refreshFrame = request(function () {
+        refreshFrame = null;
+        var shouldIncludeSummary = refreshIncludesSummary;
+        refreshIncludesSummary = false;
+        refreshProgress(shouldIncludeSummary);
+      });
+    }
+
+    function updateProgressTimer(progress) {
+      var isOpen = panel.classList.contains("open");
+      var desiredInterval = isOpen ? 1000 : progress.running ? 2000 : 0;
+      if (!desiredInterval) {
+        if (progressTimer != null) clearInterval(progressTimer);
+        progressTimer = null;
+        progressTimerMs = 0;
+        return;
+      }
+      if (progressTimer != null && progressTimerMs === desiredInterval) return;
+      if (progressTimer != null) clearInterval(progressTimer);
+      progressTimerMs = desiredInterval;
+      progressTimer = setInterval(function () { refreshProgress(false); }, desiredInterval);
+    }
+
+    function renderCompletionSummary() {
+      var node = body.querySelector("#tec-completion-summary");
+      if (!node) return;
+      var rows = completionSummary(
+        typeof config.getPlan === "function" ? config.getPlan() : { matters: [] },
+        typeof config.listLibrary === "function" ? config.listLibrary() : [],
+        progressSnapshot()
+      );
+      node.innerHTML = "";
+      var heading = documentNode.createElement("strong");
+      heading.textContent = "Progresso salvo do plano";
+      node.appendChild(heading);
+      if (!rows.length) {
+        var empty = documentNode.createElement("div");
+        empty.textContent = "Nenhuma matéria foi importada ainda.";
+        node.appendChild(empty);
+        return;
+      }
+      var completed = rows.filter(function (row) { return row.status === "completed"; }).length;
+      heading.textContent += " — " + completed + "/" + rows.length + " concluído(s)";
+      var list = documentNode.createElement("ol");
+      rows.forEach(function (row) {
+        var item = documentNode.createElement("li");
+        item.className = row.status;
+        var label = row.status === "completed" ? "concluído" : row.status === "failed" ? "erro nesta etapa" : row.status === "active" ? "em andamento" : row.status === "saved" ? "salvo parcialmente" : "pendente";
+        var detail = row.savedParts ? " — " + row.savedParts + " parte(s) salva(s)" : "";
+        item.textContent = row.code + " — " + row.title + ": " + label + detail;
+        list.appendChild(item);
+      });
+      node.appendChild(list);
+    }
+
+    function refreshProgress(includeSummary) {
+      var progress = progressSnapshot();
+      var label = progressLabel(progress);
+      launcherStatus.textContent = label;
+      launcher.title = progressDetails(progress);
+      var progressNode = body.querySelector("#tec-progress");
+      if (progressNode) {
+        progressNode.textContent = progressDetails(progress);
+        progressNode.style.color = progress.phase === "error" || progress.stale ? "#b91c1c" : progress.phase === "paused" ? "#92400e" : "#1e3a8a";
+      }
+      updateProgressTimer(progress);
+      if (includeSummary !== false) renderCompletionSummary();
+    }
+
+    function handleAutomationError(error) {
+      if (config.onError) {
+        try { config.onError(error); } catch (_) {}
+      }
+      setStatus(error && error.message || error, true);
+      scheduleProgressRefresh(true);
+    }
+
+    function setStatus(message, isError) {
+      var node = body.querySelector(".status");
+      if (!node) return;
+      node.textContent = String(message || "");
+      node.style.color = isError ? "#b91c1c" : "#0f766e";
+      scheduleProgressRefresh(false);
+    }
+
+    function automationView() {
+      var plan = typeof config.getPlan === "function" ? config.getPlan() : { matters: [] };
+      body.innerHTML = "<div class=\"hint\">Cole ou selecione o seu <code>Tecconcursos_Materias_Consolidado.md</code> (ou JSON). O plano fica salvo no script e cada MAT vira um caderno no TecConcursos.</div><label for=\"tec-plan-file\">Arquivo do plano</label><input id=\"tec-plan-file\" type=\"file\" accept=\".md,.txt,.json,text/plain,text/markdown,application/json\"><label for=\"tec-plan-input\">Plano de matérias</label><textarea id=\"tec-plan-input\" placeholder=\"MAT-001 — Coesão textual&#10;TecConcursos: 12507 — Língua Portuguesa ...\"></textarea><div class=\"actions\"><button type=\"button\" data-action=\"import\">Salvar plano</button></div><div class=\"hint\" id=\"tec-plan-summary\">Plano atual: " + String(plan.matters && plan.matters.length || 0) + " matéria(s), " + String(plan.banks && plan.banks.length || 0) + " banca(s) e " + String(plan.years && plan.years.length || 0) + " ano(s).</div><label for=\"tec-folder-id\">ID da pasta de destino no TecConcursos</label><input id=\"tec-folder-id\" value=\"" + String(typeof config.defaultFolderId === "function" ? config.defaultFolderId() : "") + "\" inputmode=\"numeric\"><div class=\"actions\"><button type=\"button\" data-action=\"create\">Criar e exportar plano</button><button type=\"button\" data-action=\"current\" class=\"secondary\">Exportar caderno atual</button><button type=\"button\" data-action=\"pause\" class=\"danger\">Pausar</button><button type=\"button\" data-action=\"resume\" class=\"secondary\">Retomar execução</button><button type=\"button\" data-action=\"takeover\" class=\"secondary\">Assumir execução</button><button type=\"button\" data-action=\"diagnostics\" class=\"secondary\">Baixar log detalhado</button></div><div class=\"hint\" id=\"tec-progress\"></div><div class=\"status\"></div>";
+      body.innerHTML = body.innerHTML.replace("<div class=\"hint\" id=\"tec-progress\"></div>", "<div class=\"hint\" id=\"tec-progress\"></div><div id=\"tec-completion-summary\" class=\"completion-summary\"></div>");
+      var folderInput = body.querySelector("#tec-folder-id");
+      folderInput.addEventListener("input", function () {
+        if (config.onFolderIdChange) config.onFolderIdChange(folderInput.value);
+      });
+      setStatus(typeof config.getStatus === "function" ? config.getStatus() : "Pronto.", false);
+      refreshProgress();
+      body.querySelector("[data-action='import']").addEventListener("click", function () {
+        try {
+          var result = config.onImport && config.onImport(body.querySelector("#tec-plan-input").value);
+          automationView();
+          setStatus(result || "Plano salvo.", false);
+        } catch (error) { setStatus(error.message || error, true); }
+      });
+      body.querySelector("#tec-plan-file").addEventListener("change", function (event) {
+        var file = event.target.files && event.target.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function () { body.querySelector("#tec-plan-input").value = String(reader.result || ""); setStatus("Arquivo carregado. Clique em 'Salvar plano'.", false); };
+        reader.onerror = function () { setStatus("Não foi possível ler o arquivo selecionado.", true); };
+        reader.readAsText(file, "UTF-8");
+      });
+      body.querySelector("[data-action='create']").addEventListener("click", function () {
+        try { Promise.resolve(config.onCreate && config.onCreate(body.querySelector("#tec-folder-id").value)).then(function (message) { setStatus(message || "Automação iniciada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
+      });
+      body.querySelector("[data-action='current']").addEventListener("click", function () {
+        try { Promise.resolve(config.onCurrent && config.onCurrent()).then(function (message) { setStatus(message || "Exportação iniciada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
+      });
+      body.querySelector("[data-action='pause']").addEventListener("click", function () {
+        try {
+          Promise.resolve(config.onPause && config.onPause()).then(function (message) {
+            setStatus(message || "Automação pausada. Você poderá retomar pela mesma tela.", false);
+            refreshProgress();
+          }).catch(handleAutomationError);
+        } catch (error) { handleAutomationError(error); }
+      });
+      body.querySelector("[data-action='resume']").addEventListener("click", function () {
+        try { Promise.resolve(config.onResume && config.onResume()).then(function (message) { setStatus(message || "Retomada solicitada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
+      });
+      body.querySelector("[data-action='takeover']").addEventListener("click", function () {
+        try { Promise.resolve(config.onTakeover && config.onTakeover()).then(function (message) { setStatus(message || "Execução assumida.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
+      });
+      body.querySelector("[data-action='diagnostics']").addEventListener("click", function () {
+        try {
+          var count = config.onDownloadDiagnostics ? config.onDownloadDiagnostics() : 0;
+          setStatus("Log detalhado baixado com " + String(count || 0) + " eventos.", false);
+        } catch (error) { setStatus(error.message || error, true); }
+      });
+    }
+
+    function libraryView() {
+      var entries = typeof config.listLibrary === "function" ? config.listLibrary() : [];
+      var groups = entries.reduce(function (result, entry) {
+        var group = entry.group || "Sem grupo";
+        (result[group] = result[group] || []).push(entry);
+        return result;
+      }, {});
+      body.innerHTML = "<div class=\"hint\">Os arquivos permanecem nesta biblioteca até você removê-los. Baixe Excel ou HTML interativo por caderno.</div><div class=\"hint\" id=\"tec-progress\"></div><div id=\"tec-library-tree\"></div><div class=\"status\"></div>";
+      var tree = body.querySelector("#tec-library-tree");
+      Object.keys(groups).sort(function (left, right) { return left.localeCompare(right, "pt-BR"); }).forEach(function (group) {
+        var details = documentNode.createElement("details");
+        details.open = true;
+        var summary = documentNode.createElement("summary");
+        summary.textContent = group + " (" + groups[group].length + ")";
+        details.appendChild(summary);
+        groups[group].forEach(function (entry) {
+          var item = documentNode.createElement("div");
+          item.className = "entry";
+          var open = button(documentNode, entry.title || entry.code, "entry-open");
+          open.addEventListener("click", function () { if (config.onSelect) config.onSelect(entry.id); });
+          item.appendChild(open);
+          var info = documentNode.createElement("small");
+          info.textContent = String(entry.questions ? entry.questions.length : entry.totalQuestions || 0) + " questões · " + String(entry.parts ? entry.parts.length : 0) + " parte(s)";
+          item.appendChild(info);
+          var actions = documentNode.createElement("div");
+          actions.className = "entry-actions";
+          var xlsx = button(documentNode, "Excel", "");
+          var html = button(documentNode, "HTML", "secondary");
+          var remove = button(documentNode, "Remover", "danger");
+          xlsx.addEventListener("click", function () { if (config.onDownloadXlsx) config.onDownloadXlsx(entry.id); });
+          html.addEventListener("click", function () { if (config.onDownloadHtml) config.onDownloadHtml(entry.id); });
+          remove.addEventListener("click", function () { if (config.onRemove) config.onRemove(entry.id); libraryView(); });
+          [xlsx, html, remove].forEach(function (node) { actions.appendChild(node); });
+          item.appendChild(actions);
+          details.appendChild(item);
+        });
+        tree.appendChild(details);
+      });
+      if (!entries.length) tree.innerHTML = "<div class=\"empty\">Ainda não há cadernos exportados.</div>";
+    }
+
+    function aiContextView() {
+      var contextText = String(config.aiContextText || "AI Context indisponível neste bundle.");
+      body.innerHTML = "<div class=\"hint\">Contexto operacional e regras que orientam futuras alterações do userscript. O conteúdo é somente leitura e pode ser copiado.</div><div class=\"ai-context-actions\"><button type=\"button\" data-action=\"copy-ai-context\" class=\"secondary\">Copiar AI Context</button><span class=\"status\"></span></div><pre class=\"ai-context\" id=\"tec-ai-context-content\"></pre>";
+      body.querySelector("#tec-ai-context-content").textContent = contextText;
+      body.querySelector("[data-action='copy-ai-context']").addEventListener("click", function () {
+        var statusMessage = body.querySelector(".status");
+        var finish = function (message, isError) { statusMessage.textContent = message; statusMessage.style.color = isError ? "#b91c1c" : "#0f766e"; };
+        if (documentNode.defaultView && documentNode.defaultView.navigator && documentNode.defaultView.navigator.clipboard && documentNode.defaultView.navigator.clipboard.writeText) {
+          documentNode.defaultView.navigator.clipboard.writeText(contextText).then(function () { finish("AI Context copiado.", false); }).catch(function () { finish("Não foi possível acessar a área de transferência.", true); });
+          return;
+        }
+        finish("Selecione e copie o texto manualmente.", false);
+      });
+    }
+
+    function render() {
+      Array.from(panel.querySelectorAll("[data-tab]")).forEach(function (tab) {
+        tab.classList.toggle("active", tab.getAttribute("data-tab") === activeTab);
+      });
+      if (activeTab === "library") libraryView(); else if (activeTab === "ai-context") aiContextView(); else automationView();
+      refreshProgress();
+    }
+    launcher.addEventListener("click", function () { panel.classList.add("open"); launcher.style.display = "none"; render(); });
+    panel.querySelector("[data-action='close']").addEventListener("click", function () {
+      panel.classList.remove("open");
+      launcher.style.display = "block";
+      scheduleProgressRefresh(false);
+    });
+    Array.from(panel.querySelectorAll("[data-tab]")).forEach(function (tab) {
+      tab.addEventListener("click", function () { activeTab = tab.getAttribute("data-tab"); render(); });
+    });
+    var pageWindow = documentNode.defaultView || {};
+    if (typeof pageWindow.addEventListener === "function") {
+      pageWindow.addEventListener("storage", function () { scheduleProgressRefresh(false); });
+    }
+    refreshProgress(false);
+    return { panel: panel, open: function () { panel.classList.add("open"); launcher.style.display = "none"; render(); }, refresh: render, setStatus: setStatus };
+  }
+
+  return { createPanel: createPanel, completionSummary: completionSummary };
+});
