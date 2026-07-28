@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      2.5.17
+// @version      2.5.18
 // @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.
 // @author       Codex
 // @match        https://www.tecconcursos.com.br/*
@@ -3322,7 +3322,7 @@
       if (state.creation && state.creation.reuseExistingCadernos && context.isFolderPage(context.root)) {
         return reuseExistingCadernoOrOpenFilter(state);
       }
-      if (state.creation && state.creation.reuseExistingCadernos && state.creation.phase === "prepare" && !context.isFolderPage(context.root)) {
+      if (state.creation && state.creation.reuseExistingCadernos && state.creation.phase === "prepare" && !context.isFolderPage(context.root) && !context.isFilterPage(context.root)) {
         return openFolderForPendingCreation(state);
       }
       if (state.creation && state.creation.phase === "prepare" && state.creation.filterUrl && !context.isFilterPage(context.root)) {
@@ -4387,7 +4387,7 @@
     launcher.appendChild(launcherStatus);
     var launcherPause = button(documentNode, "⏹ Parar", "");
     launcherPause.id = "tec-library-pause";
-    launcherPause.dataset.tecScraperVersion = "2.5.17";
+    launcherPause.dataset.tecScraperVersion = "2.5.18";
     launcherPause.setAttribute("aria-label", "Parar automação");
     var launcherWrap = documentNode.createElement("div");
     launcherWrap.id = "tec-library-launcher-wrap";
@@ -4395,9 +4395,9 @@
     launcherWrap.appendChild(launcherPause);
     var panel = documentNode.createElement("section");
     panel.id = "tec-library-panel";
-    panel.dataset.tecScraperVersion = "2.5.17";
-    launcher.dataset.tecScraperVersion = "2.5.17";
-    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.5.17</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
+    panel.dataset.tecScraperVersion = "2.5.18";
+    launcher.dataset.tecScraperVersion = "2.5.18";
+    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.5.18</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
     documentNode.body.appendChild(launcherWrap);
     documentNode.body.appendChild(panel);
     var body = panel.querySelector(".body");

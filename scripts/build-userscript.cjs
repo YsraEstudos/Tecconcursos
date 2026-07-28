@@ -10,7 +10,7 @@ const metadata = [
   "// ==UserScript==",
   "// @name         TecConcursos - Coletor de Questões Pro",
   "// @namespace    https://github.com/YsraEstudos/Tecconcursos",
-  "// @version      2.5.17",
+  "// @version      2.5.18",
   "// @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.",
   "// @author       Codex",
   "// @match        https://www.tecconcursos.com.br/*",

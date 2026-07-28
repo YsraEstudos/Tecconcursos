@@ -160,7 +160,7 @@
       if (state.creation && state.creation.reuseExistingCadernos && context.isFolderPage(context.root)) {
         return reuseExistingCadernoOrOpenFilter(state);
       }
-      if (state.creation && state.creation.reuseExistingCadernos && state.creation.phase === "prepare" && !context.isFolderPage(context.root)) {
+      if (state.creation && state.creation.reuseExistingCadernos && state.creation.phase === "prepare" && !context.isFolderPage(context.root) && !context.isFilterPage(context.root)) {
         return openFolderForPendingCreation(state);
       }
       if (state.creation && state.creation.phase === "prepare" && state.creation.filterUrl && !context.isFilterPage(context.root)) {

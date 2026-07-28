@@ -83,3 +83,52 @@ test("retomada na pasta abre o caderno existente em vez de voltar aos filtros", 
   assert.equal(state.creation.phase, "awaiting-existing-caderno");
   assert.equal(state.creation.current.cadernoId, "99279370");
 });
+
+test("modo de reutilização cria um caderno novo na página de filtros sem voltar para a pasta", async () => {
+  const filterUrl = "https://www.tecconcursos.com.br/questoes/filtrar?idPasta=6423024";
+  const folderUrl = "https://www.tecconcursos.com.br/questoes/pastas/6423024";
+  const state = {
+    running: true,
+    creation: {
+      reuseExistingCadernos: true,
+      folderUrl,
+      filterUrl,
+      index: 0,
+      phase: "prepare",
+      plan: { matters: [{ code: "MAT-001", title: "Coesão textual - Conectivos básicos", group: "Português" }] }
+    },
+    export: null,
+    progress: {}
+  };
+  const root = { location: { href: filterUrl, pathname: "/questoes/filtrar" } };
+  let createCalls = 0;
+  const context = {
+    root,
+    document: {},
+    readState() { return state; },
+    lockManager: { acquireLease() { return { acquired: true }; } },
+    ensureRunning() {},
+    recordEvent() {},
+    writeState() {},
+    persistProgress(current, patch) { current.progress = Object.assign({}, current.progress, patch); },
+    pageDiagnosticSnapshot() { return {}; },
+    isPrintPage() { return false; },
+    isCadernoPage() { return false; },
+    isFilterPage() { return true; },
+    isFolderPage() { return false; },
+    caderno: {
+      createNextCaderno(current) {
+        createCalls += 1;
+        assert.equal(current.creation.index, 0);
+        return "Criando o próximo caderno.";
+      }
+    },
+    status() { return "Pronto."; }
+  };
+
+  const result = await orchestratorModule.createOrchestrator(context).resume();
+
+  assert.equal(result, "Criando o próximo caderno.");
+  assert.equal(createCalls, 1);
+  assert.equal(root.location.href, filterUrl);
+});
