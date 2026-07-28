@@ -4,6 +4,7 @@
       plan: require("./plan.cjs"),
       library: require("./library.cjs"),
       dom: require("./automation-dom.cjs"),
+      activity: require("./automation-activity.cjs"),
       lock: require("./automation-lock.cjs"),
       state: require("./automation-state.cjs"),
       filters: require("./automation-filters.cjs"),
@@ -16,6 +17,7 @@
     } : (function (modules) {
       return Object.assign({}, modules, {
         dom: modules.automationDom,
+        activity: modules.automationActivity,
         lock: modules.automationLock,
         state: modules.automationState,
         filters: modules.automationFilters,
@@ -43,6 +45,7 @@
   var MAX_PER_PRINT = stateModule.MAX_PER_PRINT;
   var STALE_AFTER_MS = stateModule.STALE_AFTER_MS;
   var OUTPUT_WAIT_TIMEOUT_MS = stateModule.OUTPUT_WAIT_TIMEOUT_MS;
+  var INACTIVITY_PAUSE_MS = stateModule.INACTIVITY_PAUSE_MS;
   var ACTION_DELAY_MIN_MS = 300;
   var ACTION_DELAY_MAX_MS = 600;
   var clean = deps.dom.clean;
@@ -67,7 +70,17 @@
       return stateModule.normalizeState(storage.read(STATE_KEY, stateModule.defaultState()));
     }
 
-    var lockManager = deps.lock.createLockManager({ root: rootNode, storage: storage, readState: readState, ownerId: config.ownerId });
+    var pauseRequestHandler = null;
+    var lockManager = deps.lock.createLockManager({
+      root: rootNode,
+      storage: storage,
+      readState: readState,
+      ownerId: config.ownerId,
+      onPauseRequest: function (request) {
+        if (pauseRequestHandler) return pauseRequestHandler(request);
+        return undefined;
+      }
+    });
     var ownerId = lockManager.ownerId;
 
     function writeState(state, options) {
@@ -143,6 +156,7 @@
       waitFor: waitFor,
       clean: clean,
       pageDiagnosticSnapshot: pageDiagnosticSnapshot,
+      recommendedMaxPerPrint: deps.print.recommendedMaxPerPrint,
       cadernoUrl: deps.filters.cadernoUrl,
       ensureRunning: ensureRunning,
       delayBeforeAction: delayBeforeAction
@@ -159,9 +173,13 @@
       pageDiagnosticSnapshot: pageDiagnosticSnapshot,
       cadernoIdFromLocation: cadernoIdFromLocation,
       cadernoUrl: deps.filters.cadernoUrl,
+      findCadernoLinkByTitle: deps.filters.findCadernoLinkByTitle,
+      isFolderPageReady: deps.filters.isFolderPageReady,
       isFilterPage: deps.filters.isFilterPage,
       isPrintPage: deps.filters.isPrintPage,
       isCadernoPage: deps.filters.isCadernoPage,
+      isFolderPage: deps.filters.isFolderPage,
+      waitFor: waitFor,
       caderno: cadernoWorkflow,
       print: printWorkflow,
       output: outputWorkflow,
@@ -226,14 +244,69 @@
       storage.write(FOLDER_KEY, id);
       return id;
     }
-    function pause() {
+    function pause(source) {
       var state = readState();
-      if (state.runId && !lockManager.ownsLock(lockManager.readLock(), state)) return status();
+      if (!state.running) return status();
+      var currentLock = lockManager.readLock();
+      if (state.runId && !lockManager.ownsLock(currentLock, state)) {
+        var lockIsActive = Boolean(currentLock && Number(currentLock.expiresAt) > Date.now());
+        var canReacquire = !lockIsActive || currentLock.ownerId === lockManager.ownerId;
+        if (canReacquire) {
+          var acquired = lockManager.acquireLease(state, false);
+          if (acquired.acquired) currentLock = lockManager.readLock();
+        }
+        if (!lockManager.ownsLock(currentLock, state)) {
+          var requested = typeof lockManager.requestPause === "function" && lockManager.requestPause(state, source || "manual");
+          return requested
+            ? "Pausa solicitada à aba proprietária. A execução será interrompida assim que receber o comando."
+            : status();
+        }
+      }
+      if (inactivityMonitor) inactivityMonitor.cancel();
+      diagnostics.recordEvent(state, "manual-pause", { source: String(source || "manual") });
       state.running = false;
       diagnostics.persistProgress(state, { phase: "paused", message: "Automação pausada. A execução pode ser retomada." });
       lockManager.releaseLease(state);
       return status();
     }
+
+    pauseRequestHandler = function (request) {
+      var state = readState();
+      if (!state.running || !state.runId) return status();
+      if (request && request.runId && request.runId !== state.runId) return status();
+      if (!lockManager.ownsLock(lockManager.readLock(), state)) return status();
+      return pause("remote:" + String(request && request.sourceLabel || "manual"));
+    };
+
+    function pauseForInactivity() {
+      var state = readState();
+      if (!state.running) return status();
+      if (state.runId && !lockManager.ownsLock(lockManager.readLock(), state)) return status();
+      if (inactivityMonitor) inactivityMonitor.cancel();
+      diagnostics.recordEvent(state, "inactivity-pause", {
+        timeoutMs: INACTIVITY_PAUSE_MS,
+        page: pageDiagnosticSnapshot(rootNode, documentNode)
+      });
+      state.running = false;
+      diagnostics.persistProgress(state, {
+        phase: "paused",
+        message: "Automação pausada por inatividade após 1 minuto sem a página ativa. Clique em Retomar para continuar.",
+        pausedBy: "inactivity",
+        inactivityTimeoutMs: INACTIVITY_PAUSE_MS
+      });
+      lockManager.releaseLease(state);
+      return status();
+    }
+
+    var inactivityMonitor = deps.activity && typeof deps.activity.createInactivityMonitor === "function"
+      ? deps.activity.createInactivityMonitor({
+        root: rootNode,
+        document: documentNode,
+        timeoutMs: INACTIVITY_PAUSE_MS,
+        onInactive: pauseForInactivity
+      })
+      : null;
+    if (inactivityMonitor) inactivityMonitor.start();
     function fail(error) {
       var state = readState();
       if (error && error.code === "AUTOMATION_PAUSED") return status();
@@ -308,6 +381,43 @@
       }
       return resume();
     }
+
+    function restartMaterialSearch(folderId) {
+      var existing = readState();
+      if (existing.running) throw new Error("Pause a automação atual antes de reiniciar a busca por materiais.");
+      if (existing.runId) lockManager.releaseLease(existing);
+      var plan = readPlan();
+      if (!plan.matters.length) throw new Error("Importe o plano consolidado antes de reiniciar a busca por materiais.");
+      var id = clean(folderId || readFolderId());
+      if (!id) throw new Error("Informe a pasta de destino do TecConcursos.");
+      saveFolderId(id);
+      var state = {
+        version: 1,
+        runId: lockManager.createRunId(),
+        ownerId: ownerId,
+        running: true,
+        creation: {
+          plan: plan,
+          folderId: id,
+          folderUrl: deps.filters.folderUrl(rootNode, id),
+          filterUrl: deps.filters.filterUrl(rootNode, id),
+          reuseExistingCadernos: true,
+          index: 0,
+          phase: "prepare",
+          outcomes: []
+        },
+        export: null,
+        progress: { phase: "starting", message: "Busca de materiais reiniciada.", matterIndex: 0, mattersTotal: plan.matters.length, startedAt: new Date().toISOString() }
+      };
+      var acquired = lockManager.acquireLease(state, false);
+      if (!acquired.acquired) throw lockManager.lockError(acquired.lock);
+      writeState(state);
+      if (!deps.filters.isFolderPage(rootNode)) {
+        rootNode.location.href = state.creation.folderUrl;
+        return "Abrindo a pasta para reiniciar a busca de materiais.";
+      }
+      return resume();
+    }
     function startCurrentCaderno() {
       var id = cadernoIdFromLocation(rootNode.location);
       if (!id || !deps.filters.isCadernoPage(rootNode)) throw new Error("Abra um caderno antes de iniciar a exportação.");
@@ -353,9 +463,11 @@
       getState: readState,
       status: status,
       pause: pause,
+      pauseForInactivity: pauseForInactivity,
       ensureRunning: ensureRunning,
       takeover: takeover,
       startCreation: startCreation,
+      restartMaterialSearch: restartMaterialSearch,
       startCurrentCaderno: startCurrentCaderno,
       resume: resume,
       resumeOnPageLoad: resumeOnPageLoad,

@@ -14,6 +14,7 @@
   var MAX_PER_PRINT = 200;
   var STALE_AFTER_MS = 90000;
   var OUTPUT_WAIT_TIMEOUT_MS = 60000;
+  var INACTIVITY_PAUSE_MS = 60000;
 
   function defaultState() {
     return { version: 1, running: false, creation: null, export: null };
@@ -56,6 +57,7 @@
     MAX_PER_PRINT: MAX_PER_PRINT,
     STALE_AFTER_MS: STALE_AFTER_MS,
     OUTPUT_WAIT_TIMEOUT_MS: OUTPUT_WAIT_TIMEOUT_MS,
+    INACTIVITY_PAUSE_MS: INACTIVITY_PAUSE_MS,
     defaultState: defaultState,
     normalizeState: normalizeState,
     markProgress: markProgress,

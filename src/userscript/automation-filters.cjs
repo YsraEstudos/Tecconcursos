@@ -49,9 +49,17 @@
   function isFilterPage(rootNode) { return /\/questoes\/filtrar/i.test(currentPath(rootNode)); }
   function isPrintPage(rootNode) { return /\/questoes\/cadernos\/\d+\/imprimir/i.test(currentPath(rootNode)); }
   function isCadernoPage(rootNode) { return /\/questoes\/cadernos\/\d+/i.test(currentPath(rootNode)) && !isPrintPage(rootNode); }
+  function isFolderPage(rootNode) { return /\/questoes\/pastas\/\d+/i.test(currentPath(rootNode)); }
 
   function folderIdFromLocation(rootNode) {
-    try { return new URL(rootNode.location.href).searchParams.get("idPasta") || ""; } catch (_) { return ""; }
+    try {
+      var location = rootNode && rootNode.location;
+      var url = new URL(location && location.href || "", "https://www.tecconcursos.com.br");
+      var fromQuery = url.searchParams.get("idPasta") || "";
+      if (fromQuery) return fromQuery;
+      var match = url.pathname.match(/\/questoes\/pastas\/(\d+)/i);
+      return match ? match[1] : "";
+    } catch (_) { return ""; }
   }
 
   function filterUrl(rootNode, folderId) {
@@ -59,9 +67,28 @@
     return origin + "/questoes/filtrar?idPasta=" + encodeURIComponent(folderId || folderIdFromLocation(rootNode));
   }
 
+  function folderUrl(rootNode, folderId) {
+    var origin = rootNode.location && rootNode.location.origin || "https://www.tecconcursos.com.br";
+    return origin + "/questoes/pastas/" + encodeURIComponent(folderId || folderIdFromLocation(rootNode));
+  }
+
   function cadernoUrl(rootNode, id) {
     var origin = rootNode.location && rootNode.location.origin || "https://www.tecconcursos.com.br";
     return origin + "/questoes/cadernos/" + encodeURIComponent(id);
+  }
+
+  function isFolderPageReady(documentNode) {
+    return Boolean(documentNode && typeof documentNode.querySelector === "function" && documentNode.querySelector("input[name='pastaAtualId'], .listagem-corpo"));
+  }
+
+  function findCadernoLinkByTitle(documentNode, title) {
+    if (!documentNode || typeof documentNode.querySelectorAll !== "function") return null;
+    var expected = clean(title).toLocaleLowerCase("pt-BR");
+    if (!expected) return null;
+    return Array.from(documentNode.querySelectorAll("a[href*='/questoes/cadernos/']")).filter(isVisible).find(function (link) {
+      var text = clean(link && (link.innerText || link.textContent));
+      return text.toLocaleLowerCase("pt-BR") === expected && !/\/imprimir(?:[/?#]|$)/i.test(String(link && (link.href || "")));
+    }) || null;
   }
 
   function filterHeadingLabel(heading) {
@@ -284,9 +311,13 @@
     isFilterPage: isFilterPage,
     isPrintPage: isPrintPage,
     isCadernoPage: isCadernoPage,
+    isFolderPage: isFolderPage,
     folderIdFromLocation: folderIdFromLocation,
     filterUrl: filterUrl,
+    folderUrl: folderUrl,
     cadernoUrl: cadernoUrl,
+    isFolderPageReady: isFolderPageReady,
+    findCadernoLinkByTitle: findCadernoLinkByTitle,
     filterHeadingLabel: filterHeadingLabel,
     searchBoxMatchesHeading: searchBoxMatchesHeading,
     treeItemMatches: treeItemMatches,

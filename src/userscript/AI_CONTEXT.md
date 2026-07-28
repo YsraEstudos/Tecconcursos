@@ -175,7 +175,7 @@ Este contexto reúne apenas contratos observados no código deste projeto, no HT
 ## Escopo do userscript
 
 - Domínio observado: `https://www.tecconcursos.com.br`.
-- Rotas atendidas pelo bundle: `/questoes/pastas*`, `/questoes/filtrar*`, `/questoes/cadernos/*` e a página de impressão do caderno.
+- O bundle é carregado em qualquer rota `https://www.tecconcursos.com.br/*` (e no domínio sem `www`) para que a Biblioteca TC esteja disponível globalmente. A coleta de questões continua limitada às páginas de caderno/filtro; a busca de reutilização usa a listagem de `/questoes/pastas/{id}` e a página do caderno/ impressão.
 - A sessão, login, assinatura e permissões pertencem ao navegador e ao TecConcursos. O script não deve armazenar ou registrar credenciais, cookies, tokens ou cabeçalhos.
 - A automação usa a UI real do site, especialmente Angular e seus eventos, em vez de presumir que um `click()` em texto decorativo seja suficiente.
 
@@ -185,6 +185,7 @@ Este contexto reúne apenas contratos observados no código deste projeto, no HT
 - A página de filtros usa `https://www.tecconcursos.com.br/questoes/filtrar?idPasta={id}`.
 - O ID pode desaparecer ao navegar. Por isso ele deve ser salvo no estado da execução e usado para reconstruir a URL de filtros.
 - O ID da pasta não deve ser inferido de texto visual se já estiver disponível na URL, no estado persistido ou em um atributo de link.
+- A busca de materiais deve comparar o nome exato do MAT com links `a[href*='/questoes/cadernos/']`; não deve tratar links de `/questoes/pastas/` como cadernos. Se não encontrar o caderno, somente então deve abrir a URL de filtros e criar um novo.
 
 ## Filtros de matéria e assunto
 
@@ -234,8 +235,8 @@ Eventos importantes registram horário, `runId`, aba, fase, caderno, parte, inte
 
 - A execução possui `runId` e `ownerId` por aba.
 - O lock usa lease, heartbeat, renovação, liberação e takeover explícito quando obsoleto.
-- Uma aba sem o lease não deve pausar, retomar ou imprimir a execução de outra aba.
-- O estado persistido deve preservar partes concluídas, próximo intervalo, índice do MAT, URL de filtros e diagnóstico do erro.
+- Uma aba sem o lease não pode retomar ou imprimir a execução de outra aba; um comando explícito de Parar pode encaminhar uma solicitação à aba proprietária, mas somente a aba proprietária grava a pausa e libera o lease.
+- O estado persistido deve preservar partes concluídas, próximo intervalo, índice do MAT, URL de filtros, URL da pasta, modo `reuseExistingCadernos` e diagnóstico do erro.
 - Em 23/07/2026, o log mostrou que os botões Pausar/Retomar eram executados, mas Retomar não tinha uma transição quando a página estava em `/questoes/pastas/{id}`. A correção passou a registrar `opening-filter` e reabrir a `filterUrl` salva antes de continuar.
 - O userscript registra `GM_registerMenuCommand`/`GM_unregisterMenuCommand` para expor `⏹ Parar automação` e `▶ Retomar automação` no menu de comandos do Tampermonkey; o menu interno de gerenciamento com `Edit`/`Delete` não é extensível pelo script.
 - O comando reutiliza `automation.pause()`/`automation.resumePaused()` e os fluxos consultam `ensureRunning` antes de cliques e navegações críticas. Uma navegação já iniciada não é cancelada, mas a próxima transição não deve ocorrer depois que a pausa for persistida.

@@ -51,10 +51,10 @@
       var clone = node.cloneNode(true);
       if (clone && typeof clone.querySelectorAll === "function") {
         Array.from(clone.querySelectorAll("img")).forEach(function (image) {
-          var source = image.currentSrc || image.getAttribute("src") || image.getAttribute("data-src") || "";
+          var source = image.getAttribute("data-tec-original-src") || image.currentSrc || image.getAttribute("src") || image.getAttribute("data-src") || "";
           var resolved = resolveUrl(source, baseUrl);
           if (resolved) image.setAttribute("src", resolved);
-          var srcset = image.getAttribute("srcset");
+          var srcset = image.getAttribute("data-tec-original-srcset") || image.getAttribute("srcset");
           if (srcset) {
             image.setAttribute("srcset", srcset.split(",").map(function (candidate) {
               var pieces = candidate.trim().split(/\s+/);
@@ -148,6 +148,35 @@
   function extractPrintedQuestions(documentNode) {
     if (!documentNode || typeof documentNode.querySelectorAll !== "function") return [];
     return Array.from(documentNode.querySelectorAll(".questao")).map(parsePrintedQuestion);
+  }
+
+  function yieldToBrowser(documentNode) {
+    var view = documentNode && documentNode.defaultView;
+    var schedule = view && typeof view.setTimeout === "function"
+      ? view.setTimeout.bind(view)
+      : typeof setTimeout === "function" ? setTimeout : null;
+    if (!schedule) return Promise.resolve();
+    return new Promise(function (resolve) { schedule(resolve, 0); });
+  }
+
+  async function extractPrintedQuestionsAsync(documentNode, options) {
+    if (!documentNode || typeof documentNode.querySelectorAll !== "function") return [];
+    var config = options || {};
+    var nodes = Array.from(documentNode.querySelectorAll(".questao"));
+    var chunkSize = Math.max(1, Number(config.chunkSize) || 5);
+    var pauseCheck = typeof config.ensureRunning === "function" ? config.ensureRunning : function () {};
+    var yieldControl = typeof config.yieldToBrowser === "function" ? config.yieldToBrowser : function () { return yieldToBrowser(documentNode); };
+    var questions = [];
+    for (var start = 0; start < nodes.length; start += chunkSize) {
+      pauseCheck();
+      var end = Math.min(nodes.length, start + chunkSize);
+      for (var index = start; index < end; index += 1) questions.push(parsePrintedQuestion(nodes[index], index));
+      if (end < nodes.length) {
+        await yieldControl();
+        pauseCheck();
+      }
+    }
+    return questions;
   }
 
   function cadernoIdFromLocation(locationLike) {
@@ -610,6 +639,7 @@
     parseHeader: parseHeader,
     parsePrintedQuestion: parsePrintedQuestion,
     extractPrintedQuestions: extractPrintedQuestions,
+    extractPrintedQuestionsAsync: extractPrintedQuestionsAsync,
     cadernoIdFromLocation: cadernoIdFromLocation,
     createLibrary: createLibrary,
     buildCsv: buildCsv,

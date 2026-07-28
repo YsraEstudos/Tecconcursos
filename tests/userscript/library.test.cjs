@@ -112,6 +112,58 @@ test("normaliza imagens relativas para URLs absolutas ao capturar o HTML impress
   assert.match(question.options[0].html, /src="https:\/\/cdn\.example\.test\/alternativa\.jpg"/);
 });
 
+test("restaura a URL protegida da imagem ao serializar a questão", () => {
+  const statement = fragmentNode('<p>Texto</p><img src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" data-tec-original-src="/questoes/img/enunciado.png">', "https://www.tecconcursos.com.br/questoes/cadernos/95080137/imprimir");
+  const node = {
+    querySelector(selector) {
+      if (selector === "a[href*='/questoes/']") return { href: "https://www.tecconcursos.com.br/questoes/123" };
+      if (selector === ".cabecalho .informacoes") return { children: [{ className: "", innerText: "FCC - Cargo/Órgão/Cargo/2025" }] };
+      if (selector === ".classificacao") return { innerText: "Língua Portuguesa - Coesão" };
+      if (selector === ".enunciado") return statement;
+      if (selector === ".enunciado strong") return { innerText: "1)" };
+      return null;
+    },
+    querySelectorAll() { return []; }
+  };
+
+  const question = library.parsePrintedQuestion(node, 0);
+
+  assert.match(question.statementHtml, /src="https:\/\/www\.tecconcursos\.com\.br\/questoes\/img\/enunciado\.png"/);
+  assert.doesNotMatch(question.statementHtml, /data:image\/gif/);
+});
+
+test("cede o thread entre lotes e interrompe a extração quando a automação é pausada", async () => {
+  const node = {
+    querySelector(selector) {
+      if (selector === "a[href*='/questoes/']") return { href: "https://www.tecconcursos.com.br/questoes/123" };
+      if (selector === ".cabecalho .informacoes") return { children: [{ className: "", innerText: "FCC - Cargo/Órgão/Cargo/2025" }] };
+      if (selector === ".classificacao") return { innerText: "Língua Portuguesa - Coesão" };
+      if (selector === ".enunciado") return { innerText: "1) Enunciado", innerHTML: "1) Enunciado" };
+      if (selector === ".enunciado strong") return { innerText: "1)" };
+      return null;
+    },
+    querySelectorAll() { return []; }
+  };
+  const documentNode = { querySelectorAll: () => Array.from({ length: 5 }, () => node) };
+  let yields = 0;
+  let checks = 0;
+  const paused = Object.assign(new Error("pausada"), { code: "AUTOMATION_PAUSED" });
+
+  await assert.rejects(
+    library.extractPrintedQuestionsAsync(documentNode, {
+      chunkSize: 2,
+      yieldToBrowser: async () => { yields += 1; },
+      ensureRunning: () => {
+        checks += 1;
+        if (checks >= 2) throw paused;
+      }
+    }),
+    error => error.code === "AUTOMATION_PAUSED"
+  );
+  assert.equal(yields, 1);
+  assert.equal(checks, 2);
+});
+
 test("biblioteca consolida partes sem duplicar questão", () => {
   const instance = library.createLibrary(storageStub());
   instance.appendPart(Object.assign({}, entry, { start: 1 }), entry.questions);

@@ -53,3 +53,10 @@ test("aguarda um intervalo humano antes de cada clique do fluxo de impressão", 
 
   assert.deepEqual(events, ["delay", "print-tab", "delay", "confirm"]);
 });
+
+test("recomenda partes menores quando a saída tem muitas imagens", () => {
+  assert.equal(print.recommendedMaxPerPrint({ imageCount: 0, contentHtmlLength: 1000 }, 200), 200);
+  assert.equal(print.recommendedMaxPerPrint({ imageCount: 15, contentHtmlLength: 1000 }, 200), 100);
+  assert.equal(print.recommendedMaxPerPrint({ imageCount: 50, contentHtmlLength: 1000 }, 200), 50);
+  assert.equal(print.recommendedMaxPerPrint({ imageCount: 0, contentHtmlLength: 1600000 }, 200), 50);
+});

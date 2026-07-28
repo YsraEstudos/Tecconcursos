@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      2.5.15
+// @version      2.5.17
 // @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.
 // @author       Codex
+// @match        https://www.tecconcursos.com.br/*
+// @match        https://tecconcursos.com.br/*
 // @match        https://www.tecconcursos.com.br/questoes/cadernos/*
 // @match        https://tecconcursos.com.br/questoes/cadernos/*
 // @match        https://www.tecconcursos.com.br/questoes/filtrar*
@@ -255,8 +257,22 @@
     return "unknown";
   }
 
+  function hostnameOf(locationLike) {
+    if (!locationLike) return "";
+    if (typeof locationLike === "string") {
+      try { return String(new URL(locationLike, "https://www.tecconcursos.com.br").hostname || "").toLowerCase(); } catch (_) { return ""; }
+    }
+    if (locationLike.hostname) return String(locationLike.hostname).toLowerCase();
+    try { return String(new URL(locationLike.href || "", "https://www.tecconcursos.com.br").hostname || "").toLowerCase(); } catch (_) { return ""; }
+  }
+
+  function isTecConcursosPage(locationLike) {
+    var hostname = hostnameOf(locationLike);
+    return hostname === "tecconcursos.com.br" || hostname.endsWith(".tecconcursos.com.br");
+  }
+
   function isSupportedPage(locationLike) {
-    return getPageKind(locationLike) !== "unknown";
+    return getPageKind(locationLike) !== "unknown" || isTecConcursosPage(locationLike);
   }
 
   function isVisible(element) {
@@ -311,6 +327,7 @@
     PAGE_PATTERNS: PAGE_PATTERNS,
     QUESTION_ROOT_SELECTORS: QUESTION_ROOT_SELECTORS,
     getPageKind: getPageKind,
+    isTecConcursosPage: isTecConcursosPage,
     isSupportedPage: isSupportedPage,
     isVisible: isVisible,
     findQuestionRoot: findQuestionRoot,
@@ -807,6 +824,7 @@
   var LOCK_KEY = "tecconcursos_caderno_automation_lock_v1";
   var OWNER_SESSION_KEY = "tecconcursos_caderno_automation_owner_v1";
   var SYNC_CHANNEL_NAME = "tecconcursos_caderno_automation_sync_v1";
+  var COMMAND_KEY = "tecconcursos_caderno_automation_command_v1";
   var LOCK_LEASE_MS = 30000;
   var LOCK_HEARTBEAT_MS = 5000;
 
@@ -879,6 +897,8 @@
     var channel = null;
     var remoteConflict = null;
     var localClaim = null;
+    var handledCommandIds = [];
+    var onPauseRequest = typeof config.onPauseRequest === "function" ? config.onPauseRequest : null;
 
     function broadcast(message) {
       if (!channel || typeof channel.postMessage !== "function") return;
@@ -939,18 +959,43 @@
       stopHeartbeat();
     }
 
+    function commandId(message) {
+      return String(message && (message.requestId || message.sentAt) || "");
+    }
+
+    function handlePauseRequest(message) {
+      if (!message || message.type !== "pause-request") return;
+      if (message.source === ownerId || message.targetOwnerId && message.targetOwnerId !== ownerId) return;
+      var id = commandId(message);
+      if (id && handledCommandIds.indexOf(id) >= 0) return;
+      if (id) {
+        handledCommandIds.push(id);
+        if (handledCommandIds.length > 20) handledCommandIds.shift();
+      }
+      if (onPauseRequest) {
+        try { onPauseRequest(message); } catch (_) {}
+      }
+    }
+
     function handleSyncMessage(event) {
       var message = event && event.data ? event.data : event;
       if (!message || message.source === ownerId) return;
       if (message.type === "lock-claim" || message.type === "lock-renew" || message.type === "lock-reassert") {
         reconcileRemoteLock(parseLock(message.lock));
+      } else if (message.type === "pause-request") {
+        handlePauseRequest(message);
       } else if (message.type === "lock-release" && remoteConflict && sameClaim(remoteConflict, parseLock(message.lock))) {
         remoteConflict = null;
       }
     }
 
     function handleStorageEvent(event) {
-      if (!event || event.key !== LOCK_KEY) return;
+      if (!event) return;
+      if (event.key === COMMAND_KEY) {
+        try { handlePauseRequest(parseLock(event.newValue)); } catch (_) {}
+        return;
+      }
+      if (event.key !== LOCK_KEY) return;
       if (!event.newValue) {
         remoteConflict = null;
         return;
@@ -1076,6 +1121,32 @@
       return true;
     }
 
+    function requestPause(state, source) {
+      var current = effectiveLock(readLock());
+      if (!current || !lockIsActive(current)) return false;
+      var request = {
+        version: 1,
+        type: "pause-request",
+        requestId: uniqueId("pause"),
+        source: ownerId,
+        targetOwnerId: current.ownerId,
+        runId: state && state.runId || current.runId || "",
+        sourceLabel: String(source || "manual"),
+        sentAt: Date.now()
+      };
+      broadcast(request);
+      var local = null;
+      try { local = rootNode && rootNode.localStorage; } catch (_) {}
+      if (local && typeof local.setItem === "function") {
+        try {
+          local.setItem(COMMAND_KEY, JSON.stringify(request));
+          var clear = rootNode && rootNode.setTimeout || (typeof setTimeout === "function" ? setTimeout : null);
+          if (clear) clear(function () { try { local.removeItem(COMMAND_KEY); } catch (_) {} }, 0);
+        } catch (_) {}
+      }
+      return true;
+    }
+
     function lockInfo(state) {
       var lock = effectiveLock(readLock());
       return {
@@ -1105,6 +1176,7 @@
       acquireLease: acquireLease,
       ensureLease: ensureLease,
       releaseLease: releaseLease,
+      requestPause: requestPause,
       lockInfo: lockInfo,
       stopHeartbeat: stopHeartbeat,
       destroy: function () { stopHeartbeat(); stopSynchronization(); }
@@ -1113,12 +1185,83 @@
 
   return {
     LOCK_KEY: LOCK_KEY,
+    COMMAND_KEY: COMMAND_KEY,
     OWNER_SESSION_KEY: OWNER_SESSION_KEY,
     SYNC_CHANNEL_NAME: SYNC_CHANNEL_NAME,
     LOCK_LEASE_MS: LOCK_LEASE_MS,
     LOCK_HEARTBEAT_MS: LOCK_HEARTBEAT_MS,
     executionOwnerId: executionOwnerId,
     createLockManager: createLockManager
+  };
+});
+
+// ---- automation-activity.cjs ----
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.automationActivity = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  function isPageHidden(documentNode) {
+    return Boolean(documentNode && (documentNode.hidden === true || documentNode.visibilityState === "hidden"));
+  }
+
+  function createInactivityMonitor(options) {
+    var config = options || {};
+    var rootNode = config.root || {};
+    var documentNode = config.document;
+    var timeoutMs = Math.max(1000, Math.floor(Number(config.timeoutMs) || 60000));
+    var onInactive = typeof config.onInactive === "function" ? config.onInactive : function () {};
+    var timer = null;
+    var started = false;
+    var set = rootNode.setTimeout || (typeof setTimeout === "function" ? setTimeout : null);
+    var clear = rootNode.clearTimeout || (typeof clearTimeout === "function" ? clearTimeout : null);
+
+    function cancel() {
+      if (timer != null && clear) clear(timer);
+      timer = null;
+    }
+
+    function schedule() {
+      if (!started || timer != null || !set || !isPageHidden(documentNode)) return;
+      timer = set(function () {
+        timer = null;
+        if (started && isPageHidden(documentNode)) onInactive();
+      }, timeoutMs);
+      if (timer && typeof timer.unref === "function") timer.unref();
+    }
+
+    function onVisibilityChange() {
+      if (isPageHidden(documentNode)) schedule();
+      else cancel();
+    }
+
+    function start() {
+      if (started) return true;
+      started = true;
+      if (documentNode && typeof documentNode.addEventListener === "function") documentNode.addEventListener("visibilitychange", onVisibilityChange);
+      onVisibilityChange();
+      return true;
+    }
+
+    function stop() {
+      if (!started) return false;
+      started = false;
+      cancel();
+      if (documentNode && typeof documentNode.removeEventListener === "function") documentNode.removeEventListener("visibilitychange", onVisibilityChange);
+      return true;
+    }
+
+    return { start: start, stop: stop, cancel: cancel, isStarted: function () { return started; } };
+  }
+
+  return {
+    isPageHidden: isPageHidden,
+    createInactivityMonitor: createInactivityMonitor
   };
 });
 
@@ -1420,10 +1563,10 @@
       var clone = node.cloneNode(true);
       if (clone && typeof clone.querySelectorAll === "function") {
         Array.from(clone.querySelectorAll("img")).forEach(function (image) {
-          var source = image.currentSrc || image.getAttribute("src") || image.getAttribute("data-src") || "";
+          var source = image.getAttribute("data-tec-original-src") || image.currentSrc || image.getAttribute("src") || image.getAttribute("data-src") || "";
           var resolved = resolveUrl(source, baseUrl);
           if (resolved) image.setAttribute("src", resolved);
-          var srcset = image.getAttribute("srcset");
+          var srcset = image.getAttribute("data-tec-original-srcset") || image.getAttribute("srcset");
           if (srcset) {
             image.setAttribute("srcset", srcset.split(",").map(function (candidate) {
               var pieces = candidate.trim().split(/\s+/);
@@ -1517,6 +1660,35 @@
   function extractPrintedQuestions(documentNode) {
     if (!documentNode || typeof documentNode.querySelectorAll !== "function") return [];
     return Array.from(documentNode.querySelectorAll(".questao")).map(parsePrintedQuestion);
+  }
+
+  function yieldToBrowser(documentNode) {
+    var view = documentNode && documentNode.defaultView;
+    var schedule = view && typeof view.setTimeout === "function"
+      ? view.setTimeout.bind(view)
+      : typeof setTimeout === "function" ? setTimeout : null;
+    if (!schedule) return Promise.resolve();
+    return new Promise(function (resolve) { schedule(resolve, 0); });
+  }
+
+  async function extractPrintedQuestionsAsync(documentNode, options) {
+    if (!documentNode || typeof documentNode.querySelectorAll !== "function") return [];
+    var config = options || {};
+    var nodes = Array.from(documentNode.querySelectorAll(".questao"));
+    var chunkSize = Math.max(1, Number(config.chunkSize) || 5);
+    var pauseCheck = typeof config.ensureRunning === "function" ? config.ensureRunning : function () {};
+    var yieldControl = typeof config.yieldToBrowser === "function" ? config.yieldToBrowser : function () { return yieldToBrowser(documentNode); };
+    var questions = [];
+    for (var start = 0; start < nodes.length; start += chunkSize) {
+      pauseCheck();
+      var end = Math.min(nodes.length, start + chunkSize);
+      for (var index = start; index < end; index += 1) questions.push(parsePrintedQuestion(nodes[index], index));
+      if (end < nodes.length) {
+        await yieldControl();
+        pauseCheck();
+      }
+    }
+    return questions;
   }
 
   function cadernoIdFromLocation(locationLike) {
@@ -1979,6 +2151,7 @@
     parseHeader: parseHeader,
     parsePrintedQuestion: parsePrintedQuestion,
     extractPrintedQuestions: extractPrintedQuestions,
+    extractPrintedQuestionsAsync: extractPrintedQuestionsAsync,
     cadernoIdFromLocation: cadernoIdFromLocation,
     createLibrary: createLibrary,
     buildCsv: buildCsv,
@@ -2006,6 +2179,7 @@
   var MAX_PER_PRINT = 200;
   var STALE_AFTER_MS = 90000;
   var OUTPUT_WAIT_TIMEOUT_MS = 60000;
+  var INACTIVITY_PAUSE_MS = 60000;
 
   function defaultState() {
     return { version: 1, running: false, creation: null, export: null };
@@ -2048,6 +2222,7 @@
     MAX_PER_PRINT: MAX_PER_PRINT,
     STALE_AFTER_MS: STALE_AFTER_MS,
     OUTPUT_WAIT_TIMEOUT_MS: OUTPUT_WAIT_TIMEOUT_MS,
+    INACTIVITY_PAUSE_MS: INACTIVITY_PAUSE_MS,
     defaultState: defaultState,
     normalizeState: normalizeState,
     markProgress: markProgress,
@@ -2107,9 +2282,17 @@
   function isFilterPage(rootNode) { return /\/questoes\/filtrar/i.test(currentPath(rootNode)); }
   function isPrintPage(rootNode) { return /\/questoes\/cadernos\/\d+\/imprimir/i.test(currentPath(rootNode)); }
   function isCadernoPage(rootNode) { return /\/questoes\/cadernos\/\d+/i.test(currentPath(rootNode)) && !isPrintPage(rootNode); }
+  function isFolderPage(rootNode) { return /\/questoes\/pastas\/\d+/i.test(currentPath(rootNode)); }
 
   function folderIdFromLocation(rootNode) {
-    try { return new URL(rootNode.location.href).searchParams.get("idPasta") || ""; } catch (_) { return ""; }
+    try {
+      var location = rootNode && rootNode.location;
+      var url = new URL(location && location.href || "", "https://www.tecconcursos.com.br");
+      var fromQuery = url.searchParams.get("idPasta") || "";
+      if (fromQuery) return fromQuery;
+      var match = url.pathname.match(/\/questoes\/pastas\/(\d+)/i);
+      return match ? match[1] : "";
+    } catch (_) { return ""; }
   }
 
   function filterUrl(rootNode, folderId) {
@@ -2117,9 +2300,28 @@
     return origin + "/questoes/filtrar?idPasta=" + encodeURIComponent(folderId || folderIdFromLocation(rootNode));
   }
 
+  function folderUrl(rootNode, folderId) {
+    var origin = rootNode.location && rootNode.location.origin || "https://www.tecconcursos.com.br";
+    return origin + "/questoes/pastas/" + encodeURIComponent(folderId || folderIdFromLocation(rootNode));
+  }
+
   function cadernoUrl(rootNode, id) {
     var origin = rootNode.location && rootNode.location.origin || "https://www.tecconcursos.com.br";
     return origin + "/questoes/cadernos/" + encodeURIComponent(id);
+  }
+
+  function isFolderPageReady(documentNode) {
+    return Boolean(documentNode && typeof documentNode.querySelector === "function" && documentNode.querySelector("input[name='pastaAtualId'], .listagem-corpo"));
+  }
+
+  function findCadernoLinkByTitle(documentNode, title) {
+    if (!documentNode || typeof documentNode.querySelectorAll !== "function") return null;
+    var expected = clean(title).toLocaleLowerCase("pt-BR");
+    if (!expected) return null;
+    return Array.from(documentNode.querySelectorAll("a[href*='/questoes/cadernos/']")).filter(isVisible).find(function (link) {
+      var text = clean(link && (link.innerText || link.textContent));
+      return text.toLocaleLowerCase("pt-BR") === expected && !/\/imprimir(?:[/?#]|$)/i.test(String(link && (link.href || "")));
+    }) || null;
   }
 
   function filterHeadingLabel(heading) {
@@ -2342,9 +2544,13 @@
     isFilterPage: isFilterPage,
     isPrintPage: isPrintPage,
     isCadernoPage: isCadernoPage,
+    isFolderPage: isFolderPage,
     folderIdFromLocation: folderIdFromLocation,
     filterUrl: filterUrl,
+    folderUrl: folderUrl,
     cadernoUrl: cadernoUrl,
+    isFolderPageReady: isFolderPageReady,
+    findCadernoLinkByTitle: findCadernoLinkByTitle,
     filterHeadingLabel: filterHeadingLabel,
     searchBoxMatchesHeading: searchBoxMatchesHeading,
     treeItemMatches: treeItemMatches,
@@ -2386,6 +2592,15 @@
       ranges.push({ start: start, count: Math.min(size, count - start + 1) });
     }
     return ranges;
+  }
+
+  function recommendedMaxPerPrint(metrics, fallback) {
+    var limit = Math.max(1, Math.floor(Number(fallback) || 200));
+    var imageCount = Math.max(0, Math.floor(Number(metrics && metrics.imageCount) || 0));
+    var contentHtmlLength = Math.max(0, Math.floor(Number(metrics && metrics.contentHtmlLength) || 0));
+    if (imageCount >= 40 || contentHtmlLength >= 1500000) return Math.min(limit, 50);
+    if (imageCount >= 12 || contentHtmlLength >= 600000) return Math.min(limit, 100);
+    return limit;
   }
 
   function clickPrintTab(documentNode) {
@@ -2431,7 +2646,8 @@
       var total = Number(initialInput.getAttribute("max") || initialInput.max || 0);
       if (!job.ranges.length) {
         if (!total) throw new Error("O TecConcursos não informou a quantidade total de questões para imprimir.");
-        job.ranges = splitRanges(total, maxPerPrint);
+        job.maxPerPrint = Math.max(1, Math.floor(Number(job.maxPerPrint) || maxPerPrint));
+        job.ranges = splitRanges(total, job.maxPerPrint);
         job.rangeIndex = 0;
       }
       if (!job.printTotalQuestions) job.printTotalQuestions = total;
@@ -2482,6 +2698,7 @@
 
   return {
     splitRanges: splitRanges,
+    recommendedMaxPerPrint: recommendedMaxPerPrint,
     clickPrintTab: clickPrintTab,
     preparePrintForm: preparePrintForm,
     createPrintWorkflow: createPrintWorkflow
@@ -2507,6 +2724,34 @@
     var outputWaitTimeoutMs = context.outputWaitTimeoutMs || 60000;
     var library = context.library;
     var extractPrintedQuestions = context.extractPrintedQuestions || deps.library.extractPrintedQuestions;
+    var extractPrintedQuestionsAsync = context.extractPrintedQuestionsAsync || deps.library.extractPrintedQuestionsAsync;
+
+    function measureOutputPage() {
+      var images = documentNode && typeof documentNode.querySelectorAll === "function" ? documentNode.querySelectorAll("#prova-conteudo img, .questao img") : [];
+      var contentNode = documentNode && typeof documentNode.querySelector === "function" ? documentNode.querySelector("#prova-conteudo") : null;
+      return {
+        imageCount: images.length,
+        questionCount: documentNode && typeof documentNode.querySelectorAll === "function" ? documentNode.querySelectorAll(".questao").length : 0,
+        contentChildCount: contentNode && contentNode.children ? contentNode.children.length : 0
+      };
+    }
+
+    function adaptPendingRanges(job, current, metrics) {
+      var fallback = Number(job.maxPerPrint) || 200;
+      var recommend = typeof context.recommendedMaxPerPrint === "function" ? context.recommendedMaxPerPrint(metrics, fallback) : fallback;
+      job.maxPerPrint = Math.min(fallback, recommend);
+      if (job.maxPerPrint >= fallback) return false;
+      var total = Number(job.printTotalQuestions) || job.ranges.reduce(function (sum, range) { return sum + (Number(range.count) || 0); }, 0);
+      var completed = job.ranges.slice(0, job.rangeIndex);
+      var nextStart = Number(current.start) + Number(current.count);
+      var tail = [];
+      for (var start = nextStart; start <= total; start += job.maxPerPrint) {
+        tail.push({ start: start, count: Math.min(job.maxPerPrint, total - start + 1) });
+      }
+      job.ranges = completed.concat(tail);
+      job.rangeIndex = completed.length;
+      return true;
+    }
 
     function ensureRunning(state) {
       if (typeof context.ensureRunning === "function") context.ensureRunning(state);
@@ -2580,14 +2825,20 @@
       });
       await waitForPrintedQuestions(state);
       ensureRunning(state);
-      var questions = extractPrintedQuestions(documentNode);
+      var outputMetrics = measureOutputPage();
+      var questions = typeof extractPrintedQuestionsAsync === "function"
+        ? await extractPrintedQuestionsAsync(documentNode, {
+          chunkSize: context.extractionChunkSize || 5,
+          ensureRunning: function () { ensureRunning(state); }
+        })
+        : extractPrintedQuestions(documentNode);
       if (!questions.length) {
         context.recordEvent(state, "extraction-empty", { page: context.pageDiagnosticSnapshot(rootNode, documentNode), expected: current && current.count });
         context.writeState(state);
         throw new Error("A página de impressão montou o DOM, mas nenhuma questão pôde ser extraída.");
       }
       ensureRunning(state);
-      context.recordEvent(state, "questions-extracted", { extracted: questions.length, expected: current && current.count, page: context.pageDiagnosticSnapshot(rootNode, documentNode) });
+      context.recordEvent(state, "questions-extracted", { extracted: questions.length, expected: current && current.count, outputMetrics: outputMetrics, page: context.pageDiagnosticSnapshot(rootNode, documentNode) });
       context.writeState(state);
       var titleNode = documentNode.querySelector("h1");
       var entry = library.appendPart(Object.assign({}, job, {
@@ -2598,6 +2849,7 @@
         printTotalQuestions: Number(job.printTotalQuestions) || 0
       }), questions);
       job.rangeIndex += 1;
+      adaptPendingRanges(job, current, outputMetrics);
       if (job.rangeIndex < job.ranges.length) {
         ensureRunning(state);
         context.persistProgress(state, {
@@ -2629,7 +2881,7 @@
           lastSavedQuestions: questions.length
         });
         ensureRunning(state);
-        rootNode.location.href = state.creation.filterUrl;
+        rootNode.location.href = state.creation.folderUrl || state.creation.filterUrl;
         return "Caderno " + entry.title + " consolidado na biblioteca. Preparando o próximo.";
       }
       state.running = false;
@@ -2954,6 +3206,80 @@
       return "Abrindo o caderno salvo para retomar a impressão.";
     }
 
+    function openFolderForPendingCreation(state) {
+      if (typeof context.ensureRunning === "function") context.ensureRunning(state);
+      var creation = state && state.creation;
+      var folderUrl = creation && String(creation.folderUrl || "");
+      if (!folderUrl) throw new Error("A execução pendente não possui a URL da pasta para procurar cadernos.");
+      context.persistProgress(state, {
+        phase: "opening-folder",
+        message: "Abrindo a pasta para procurar cadernos já existentes.",
+        matterIndex: creation.index,
+        mattersTotal: creation.plan && creation.plan.matters ? creation.plan.matters.length : 0
+      });
+      if (typeof context.ensureRunning === "function") context.ensureRunning(state);
+      if (context.root && context.root.location) context.root.location.href = folderUrl;
+      return "Abrindo a pasta para procurar cadernos já existentes.";
+    }
+
+    async function reuseExistingCadernoOrOpenFilter(state) {
+      if (typeof context.ensureRunning === "function") context.ensureRunning(state);
+      if (context.isFolderPageReady && !context.isFolderPageReady(context.document)) {
+        if (typeof context.waitFor !== "function") throw new Error("A página da pasta ainda não carregou a lista de cadernos.");
+        await context.waitFor(context.document, function () {
+          if (typeof context.ensureRunning === "function") context.ensureRunning(state);
+          return context.isFolderPageReady(context.document);
+        }, 10000, "A lista de cadernos da pasta não carregou a tempo.");
+      }
+      var creation = state && state.creation;
+      var matter = creation && creation.plan && creation.plan.matters && creation.plan.matters[creation.index];
+      if (!matter) {
+        state.running = false;
+        state.creation = null;
+        context.persistProgress(state, {
+          phase: "completed",
+          message: "Todos os cadernos do plano foram processados.",
+          matterIndex: creation && creation.index,
+          mattersTotal: creation && creation.plan && creation.plan.matters ? creation.plan.matters.length : 0
+        });
+        context.lockManager.releaseLease(state);
+        return "Todos os cadernos do plano foram processados.";
+      }
+      var link = typeof context.findCadernoLinkByTitle === "function"
+        ? context.findCadernoLinkByTitle(context.document, matter.title)
+        : null;
+      if (!link) {
+        creation.phase = "prepare";
+        context.persistProgress(state, {
+          phase: "opening-filter",
+          message: "Caderno não encontrado na pasta. Abrindo os filtros para criar " + matter.title + ".",
+          matterCode: matter.code,
+          matterTitle: matter.title,
+          matterIndex: creation.index,
+          mattersTotal: creation.plan.matters.length
+        });
+        return openFilterForPendingCreation(state);
+      }
+      var existingId = context.cadernoIdFromLocation(link.href || link.getAttribute && link.getAttribute("href"));
+      if (!existingId) throw new Error("Encontrei o caderno '" + matter.title + "', mas não consegui ler o ID do link.");
+      creation.phase = "awaiting-existing-caderno";
+      creation.current = Object.assign({}, matter, { cadernoId: existingId, reused: true });
+      context.persistProgress(state, {
+        phase: "opening-existing-caderno",
+        message: "Caderno existente encontrado: " + matter.title + ". Abrindo para coletar as questões.",
+        matterCode: matter.code,
+        matterTitle: matter.title,
+        matterIndex: creation.index,
+        mattersTotal: creation.plan.matters.length,
+        cadernoId: existingId
+      });
+      if (typeof context.ensureRunning === "function") context.ensureRunning(state);
+      var targetUrl = context.cadernoUrl(context.root, existingId);
+      if (typeof link.click === "function") link.click();
+      else if (context.root && context.root.location) context.root.location.href = targetUrl;
+      return "Caderno existente encontrado. Abrindo " + matter.title + ".";
+    }
+
     async function resume() {
       var state = context.readState();
       if (!state.running) return context.status();
@@ -2963,10 +3289,10 @@
       context.recordEvent(state, "resume-enter", { page: context.pageDiagnosticSnapshot(context.root, context.document), running: Boolean(state.running) });
       context.writeState(state);
       if (context.isPrintPage(context.root) && state.export && state.export.job) return context.output.finishExportPart(state);
-      if (context.isCadernoPage(context.root) && state.creation && state.creation.phase === "awaiting-caderno" && !state.export) {
-        var createdId = context.cadernoIdFromLocation(context.root.location);
-        if (!createdId) throw new Error("O TecConcursos abriu um caderno sem identificador.");
+      if (context.isCadernoPage(context.root) && state.creation && (state.creation.phase === "awaiting-caderno" || state.creation.phase === "awaiting-existing-caderno") && !state.export) {
         var currentMatter = state.creation.current;
+        var createdId = currentMatter && currentMatter.cadernoId || context.cadernoIdFromLocation(context.root.location);
+        if (!createdId) throw new Error("O TecConcursos abriu um caderno sem identificador.");
         state.export = { job: {
           libraryId: createdId,
           cadernoId: createdId,
@@ -2980,7 +3306,7 @@
         state.creation.phase = "exporting";
         context.persistProgress(state, {
           phase: "preparing-print",
-          message: "Novo caderno aberto. Preparando a primeira parte da impressão.",
+          message: currentMatter.reused ? "Caderno existente aberto. Preparando a primeira parte da impressão." : "Novo caderno aberto. Preparando a primeira parte da impressão.",
           matterCode: currentMatter.code,
           matterTitle: currentMatter.title,
           matterIndex: state.creation.index,
@@ -2992,6 +3318,12 @@
       if (state.export && state.export.job && !context.isCadernoPage(context.root)) {
         if (typeof context.ensureRunning === "function") context.ensureRunning(state);
         return openCadernoForPendingExport(state);
+      }
+      if (state.creation && state.creation.reuseExistingCadernos && context.isFolderPage(context.root)) {
+        return reuseExistingCadernoOrOpenFilter(state);
+      }
+      if (state.creation && state.creation.reuseExistingCadernos && state.creation.phase === "prepare" && !context.isFolderPage(context.root)) {
+        return openFolderForPendingCreation(state);
       }
       if (state.creation && state.creation.phase === "prepare" && state.creation.filterUrl && !context.isFilterPage(context.root)) {
         return openFilterForPendingCreation(state);
@@ -3016,6 +3348,7 @@
       plan: require("./plan.cjs"),
       library: require("./library.cjs"),
       dom: require("./automation-dom.cjs"),
+      activity: require("./automation-activity.cjs"),
       lock: require("./automation-lock.cjs"),
       state: require("./automation-state.cjs"),
       filters: require("./automation-filters.cjs"),
@@ -3028,6 +3361,7 @@
     } : (function (modules) {
       return Object.assign({}, modules, {
         dom: modules.automationDom,
+        activity: modules.automationActivity,
         lock: modules.automationLock,
         state: modules.automationState,
         filters: modules.automationFilters,
@@ -3055,6 +3389,7 @@
   var MAX_PER_PRINT = stateModule.MAX_PER_PRINT;
   var STALE_AFTER_MS = stateModule.STALE_AFTER_MS;
   var OUTPUT_WAIT_TIMEOUT_MS = stateModule.OUTPUT_WAIT_TIMEOUT_MS;
+  var INACTIVITY_PAUSE_MS = stateModule.INACTIVITY_PAUSE_MS;
   var ACTION_DELAY_MIN_MS = 300;
   var ACTION_DELAY_MAX_MS = 600;
   var clean = deps.dom.clean;
@@ -3079,7 +3414,17 @@
       return stateModule.normalizeState(storage.read(STATE_KEY, stateModule.defaultState()));
     }
 
-    var lockManager = deps.lock.createLockManager({ root: rootNode, storage: storage, readState: readState, ownerId: config.ownerId });
+    var pauseRequestHandler = null;
+    var lockManager = deps.lock.createLockManager({
+      root: rootNode,
+      storage: storage,
+      readState: readState,
+      ownerId: config.ownerId,
+      onPauseRequest: function (request) {
+        if (pauseRequestHandler) return pauseRequestHandler(request);
+        return undefined;
+      }
+    });
     var ownerId = lockManager.ownerId;
 
     function writeState(state, options) {
@@ -3155,6 +3500,7 @@
       waitFor: waitFor,
       clean: clean,
       pageDiagnosticSnapshot: pageDiagnosticSnapshot,
+      recommendedMaxPerPrint: deps.print.recommendedMaxPerPrint,
       cadernoUrl: deps.filters.cadernoUrl,
       ensureRunning: ensureRunning,
       delayBeforeAction: delayBeforeAction
@@ -3171,9 +3517,13 @@
       pageDiagnosticSnapshot: pageDiagnosticSnapshot,
       cadernoIdFromLocation: cadernoIdFromLocation,
       cadernoUrl: deps.filters.cadernoUrl,
+      findCadernoLinkByTitle: deps.filters.findCadernoLinkByTitle,
+      isFolderPageReady: deps.filters.isFolderPageReady,
       isFilterPage: deps.filters.isFilterPage,
       isPrintPage: deps.filters.isPrintPage,
       isCadernoPage: deps.filters.isCadernoPage,
+      isFolderPage: deps.filters.isFolderPage,
+      waitFor: waitFor,
       caderno: cadernoWorkflow,
       print: printWorkflow,
       output: outputWorkflow,
@@ -3238,14 +3588,69 @@
       storage.write(FOLDER_KEY, id);
       return id;
     }
-    function pause() {
+    function pause(source) {
       var state = readState();
-      if (state.runId && !lockManager.ownsLock(lockManager.readLock(), state)) return status();
+      if (!state.running) return status();
+      var currentLock = lockManager.readLock();
+      if (state.runId && !lockManager.ownsLock(currentLock, state)) {
+        var lockIsActive = Boolean(currentLock && Number(currentLock.expiresAt) > Date.now());
+        var canReacquire = !lockIsActive || currentLock.ownerId === lockManager.ownerId;
+        if (canReacquire) {
+          var acquired = lockManager.acquireLease(state, false);
+          if (acquired.acquired) currentLock = lockManager.readLock();
+        }
+        if (!lockManager.ownsLock(currentLock, state)) {
+          var requested = typeof lockManager.requestPause === "function" && lockManager.requestPause(state, source || "manual");
+          return requested
+            ? "Pausa solicitada à aba proprietária. A execução será interrompida assim que receber o comando."
+            : status();
+        }
+      }
+      if (inactivityMonitor) inactivityMonitor.cancel();
+      diagnostics.recordEvent(state, "manual-pause", { source: String(source || "manual") });
       state.running = false;
       diagnostics.persistProgress(state, { phase: "paused", message: "Automação pausada. A execução pode ser retomada." });
       lockManager.releaseLease(state);
       return status();
     }
+
+    pauseRequestHandler = function (request) {
+      var state = readState();
+      if (!state.running || !state.runId) return status();
+      if (request && request.runId && request.runId !== state.runId) return status();
+      if (!lockManager.ownsLock(lockManager.readLock(), state)) return status();
+      return pause("remote:" + String(request && request.sourceLabel || "manual"));
+    };
+
+    function pauseForInactivity() {
+      var state = readState();
+      if (!state.running) return status();
+      if (state.runId && !lockManager.ownsLock(lockManager.readLock(), state)) return status();
+      if (inactivityMonitor) inactivityMonitor.cancel();
+      diagnostics.recordEvent(state, "inactivity-pause", {
+        timeoutMs: INACTIVITY_PAUSE_MS,
+        page: pageDiagnosticSnapshot(rootNode, documentNode)
+      });
+      state.running = false;
+      diagnostics.persistProgress(state, {
+        phase: "paused",
+        message: "Automação pausada por inatividade após 1 minuto sem a página ativa. Clique em Retomar para continuar.",
+        pausedBy: "inactivity",
+        inactivityTimeoutMs: INACTIVITY_PAUSE_MS
+      });
+      lockManager.releaseLease(state);
+      return status();
+    }
+
+    var inactivityMonitor = deps.activity && typeof deps.activity.createInactivityMonitor === "function"
+      ? deps.activity.createInactivityMonitor({
+        root: rootNode,
+        document: documentNode,
+        timeoutMs: INACTIVITY_PAUSE_MS,
+        onInactive: pauseForInactivity
+      })
+      : null;
+    if (inactivityMonitor) inactivityMonitor.start();
     function fail(error) {
       var state = readState();
       if (error && error.code === "AUTOMATION_PAUSED") return status();
@@ -3320,6 +3725,43 @@
       }
       return resume();
     }
+
+    function restartMaterialSearch(folderId) {
+      var existing = readState();
+      if (existing.running) throw new Error("Pause a automação atual antes de reiniciar a busca por materiais.");
+      if (existing.runId) lockManager.releaseLease(existing);
+      var plan = readPlan();
+      if (!plan.matters.length) throw new Error("Importe o plano consolidado antes de reiniciar a busca por materiais.");
+      var id = clean(folderId || readFolderId());
+      if (!id) throw new Error("Informe a pasta de destino do TecConcursos.");
+      saveFolderId(id);
+      var state = {
+        version: 1,
+        runId: lockManager.createRunId(),
+        ownerId: ownerId,
+        running: true,
+        creation: {
+          plan: plan,
+          folderId: id,
+          folderUrl: deps.filters.folderUrl(rootNode, id),
+          filterUrl: deps.filters.filterUrl(rootNode, id),
+          reuseExistingCadernos: true,
+          index: 0,
+          phase: "prepare",
+          outcomes: []
+        },
+        export: null,
+        progress: { phase: "starting", message: "Busca de materiais reiniciada.", matterIndex: 0, mattersTotal: plan.matters.length, startedAt: new Date().toISOString() }
+      };
+      var acquired = lockManager.acquireLease(state, false);
+      if (!acquired.acquired) throw lockManager.lockError(acquired.lock);
+      writeState(state);
+      if (!deps.filters.isFolderPage(rootNode)) {
+        rootNode.location.href = state.creation.folderUrl;
+        return "Abrindo a pasta para reiniciar a busca de materiais.";
+      }
+      return resume();
+    }
     function startCurrentCaderno() {
       var id = cadernoIdFromLocation(rootNode.location);
       if (!id || !deps.filters.isCadernoPage(rootNode)) throw new Error("Abra um caderno antes de iniciar a exportação.");
@@ -3365,9 +3807,11 @@
       getState: readState,
       status: status,
       pause: pause,
+      pauseForInactivity: pauseForInactivity,
       ensureRunning: ensureRunning,
       takeover: takeover,
       startCreation: startCreation,
+      restartMaterialSearch: restartMaterialSearch,
       startCurrentCaderno: startCurrentCaderno,
       resume: resume,
       resumeOnPageLoad: resumeOnPageLoad,
@@ -3421,7 +3865,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  var embeddedContent = "# Universal Agent Guidelines (The AI Bible)\n\nThis document defines the core behavioral, security, design, and coding constraints. These rules are universally applicable to ensure high-quality, maintainable, and correct code output.\n\n## Rule Precedence\n\nApply instructions in this order:\n1. The user’s explicit task requirements.\n2. Repository-level rule files and project documentation.\n3. More specific rule files or documentation in the affected directory.\n4. Explicit constraints marked `CAVEAT`, `IMPORTANT`, `DO NOT CHANGE`, or equivalent, when they are relevant and not contradicted by a higher-priority rule.\n5. Existing local code conventions.\n\nTreat nearby code comments as context, not absolute authority, unless they clearly define a current technical or business constraint.\n\nWhen a rule applies only to a specific language, subsystem, framework, or workflow, place it in a path- or context-scoped rule file rather than the universal core.\n\n## Agent Behavior & Workflow\n\n* **Verification over assumption:** Treat the first implementation as a draft. Before presenting the result, run the repository's applicable verification checks. If no relevant checks exist or they cannot be run, say so explicitly.\n* **Surgical edits:** Make only the modifications necessary for the requested change. Do not rewrite, reformat, or restate unrelated files, functions, or code.\n* **Fail gracefully:** If a command or test fails, inspect its output and address the root cause. Do not repeatedly guess at fixes. If blocked by missing information, permissions, or an external dependency, state the blocker and the assumption made.\n* **Enforcement over instruction:** When a behavior must happen deterministically, prefer hooks, CI, generators, linters, type-checkers, tests, or scanners over prompt-only instructions. Rely on the repository's active tooling for styling and type-checking rather than debating stylistic prompts.\n\n## Security and Configuration\n\n* Never commit, print, log, or embed real secrets, credentials, tokens, or sensitive internal URLs.\n* Read secrets and environment-dependent values through the repository’s approved configuration mechanism.\n* When adding required configuration, update the relevant example/config schema and documentation.\n* Use existing secret-scanning, validation, and CI checks; instructions are not a substitute for enforcement.\n\n## External Integrations & Canonical References\n\n* Before changing an external API, SDK, CLI, or domain integration, consult the repository’s canonical integration documentation and, when necessary, the official documentation for the version in use.\n* Do not invent endpoints, methods, parameters, versions, or capabilities.\n* Prefer the existing client, generated types, schemas, and integration tests. If documentation is missing or ambiguous, state the assumption rather than guessing.\n\n## Shared-State Changes\n\n* For changes that write shared or persistent state, follow the repository’s existing transaction, locking, idempotency, validation, and retry conventions.\n* Add or update tests for relevant failure, rollback, and concurrency cases when applicable.\n\n## Code Style\n\n* Follow the repository’s existing formatter, linter, naming, directory, and framework conventions. Do not introduce style-only rewrites in a functional change.\n* Prefer small, cohesive functions and modules. Treat 4–20 lines per function and 500 lines per handwritten production module as review targets, not hard limits.\n* Split code when responsibilities, dependencies, or reasons to change are independent. Do not split cohesive workflows merely to satisfy a line-count rule.\n* Prefer guard clauses and early returns when they reduce nesting. Avoid more than two logical control-flow levels in new business logic unless deeper nesting makes resource lifetime, transactions, or error handling clearer.\n* Keep module paths predictable. Follow the repository’s structure first; use framework conventions when the repository has no established alternative.\n\n## Data Transformations and Performance\n\n* For repeated membership checks, grouping, or joins over in-memory collections, prefer an appropriate Set, Map, dictionary, index, or database query over repeated linear scans.\n* Avoid avoidable repeated scans inside loops when an index can preserve correctness and substantially improve complexity.\n* Nested loops are acceptable for inherently pairwise, matrix, cross-product, bounded-small-data, or clearer algorithms. Do not optimize solely to remove nesting.\n* Preserve required ordering, memory limits, and semantics. Profile or benchmark performance-sensitive paths before introducing non-obvious optimization.\n\n## Naming\n\n* Use names that describe the domain role, action, or invariant and are distinctive within their module and search context.\n* Avoid vague catch-all modules or identifiers such as `utils`, `helpers`, `data`, or generic `manager` unless they are established framework conventions or include a precise domain qualifier.\n* Name boolean predicates clearly using the convention appropriate to the language and meaning, such as `is`, `has`, `can`, `should`, `was`, or `needs`.\n\n## Types\n\n* Make types explicit at public APIs and system boundaries: HTTP, CLI, database, queue, filesystem, external APIs, serialization, and complex domain operations.\n* Allow local type inference when the inferred type is clear and preserves type safety.\n* In TypeScript, do not introduce implicit `any`. Avoid explicit `any`; use `unknown` with runtime validation when input is uncertain.\n* In Python, type public functions and structured data. Prefer domain models, `TypedDict`, `dataclass`, or typed mappings over untyped dictionaries when shape matters.\n* Introduce domain-specific types for values whose accidental interchange would cause meaningful bugs, such as money, units, identifiers, or validated state.\n\n## Duplication and Abstraction\n\n* Do not duplicate business rules, validation rules, security policy, or protocol behavior that must remain consistent across call sites.\n* Extract a shared abstraction when three similar call sites reveal a stable shared contract, or earlier when one policy must change atomically everywhere.\n* Do not abstract code merely because it looks syntactically similar. Preserve separate implementations when their future changes are likely to diverge.\n\n## Errors\n\n* For validation and internal diagnostic errors, include the operation or field, the expected contract, and a safe summary of the received value.\n* Redact, hash, omit, or truncate secrets, credentials, session identifiers, personal data, and large payloads.\n* Keep user-facing errors safe and actionable; keep implementation detail in protected logs or structured diagnostics.\n\n## Comments and Documentation\n\n* **Preserve intent:** Preserve useful comments and docstrings during refactoring. Update or relocate them when surrounding code changes; remove them only when obsolete, inaccurate, redundant with clear code, or replaced by a more durable source of truth.\n* **Explain why, not what:** Write comments to document the \"why\" and explain non-obvious logic, invariants, or external limitations. Never write comments that merely restate self-documenting code (e.g., `# Increment counter`).\n* **Workarounds and Provenance:** When introducing code to fix a production incident, upstream bug, or version conflict, include a comment stating:\n  * The reason for the workaround.\n  * A stable issue, ticket, or commit reference.\n  * The affected dependency/version and the removal condition (e.g., target upgrade version).\n  * *A comment explains the exception; a regression test prevents its accidental removal.*\n* **Do not leak data:** Never include real credentials, private URLs, customer data, or sensitive incident details in comments.\n\n## Public APIs and Interfaces\n\n* **Document boundaries:** Document stable consumer-facing contracts according to the language and repository convention. Describe behavior, constraints, side effects, and compatibility expectations when they are not evident from types or usage.\n* **Document the contract:** State the intent, key parameters, expected return values, exceptions raised, and side effects. Do not add boilerplate docstrings that only repeat obvious signatures.\n* **Conditional examples:** Include code usage examples only when the invocation, state requirements, or return semantics are complex or non-obvious. Prefer verified automated tests over documentation examples.\n\n## Verification and Test Automation\n\n* **Verification command:** Provide one documented, non-interactive command (e.g., `npm run verify` or `make verify`) that executes all fast deterministic checks (formatting, linting, type-checking, and unit tests) before presenting a change.\n* **Readiness guarantee:** Do not claim a change is verified if the required checks could not run. The CI must execute the full required test matrix.\n\n## Test Coverage and Regressions\n\n* **Tested behavior:** Add or update tests for every behavior change that can fail (business rules, validation, serialization, errors, security). Test observable behavior through stable public interfaces; do not test trivial private helpers just for coverage.\n* **Regression testing:** Every bug fix must include a regression test that fails before the fix is applied. If a deterministic test is not feasible, state why and add the nearest reliable automated coverage.\n\n## External I/O and Test Doubles\n\n* **Isolation boundary:** Unit tests must not call production services or depend on uncontrolled network access, shared databases, system time, randomness, or machine-specific environments.\n* **Pragmatic doubles:** Prefer a reusable named fake for complex dependencies. Use focused stubs, mocks, spies, or patches only for one-off scenarios (e.g., timeouts, retries, or verifying side effects).\n* **No scattered patching:** Do not scatter patches of third-party libraries. Wrap external services in thin project-owned adapters and test the adapter with focused integration tests.\n\n## Test Qualities and Determinism\n\n* **F.I.R.S.T. unit tests:** Keep unit tests Fast, Independent (no shared mutable state), Repeatable (order-independent), Self-validating, and Timely (written alongside code).\n* **Deterministic environment:** Freeze or inject time, randomness, locale, timezone, and API responses to eliminate flakiness.\n* **Cleanup and isolation:** New tests must not introduce shared mutable state, order dependence, or environment leakage, and must respect the repository's supported execution model.\n* **Readable naming:** Name tests as readable behavior statements including the condition and expected outcome (e.g., `test_order_total_includes_tax_when_region_is_eu`), preferring one behavior per test.\n\n## Dependencies and Composition\n\n* **Explicit injection:** Prefer constructor injection for long-lived dependencies and function parameters for transient operation values. Avoid hidden dependencies via mutable global state or static service locators.\n* **Composition root:** In application code with meaningful infrastructure boundaries, keep vendor-specific construction and wiring at the composition root or framework bootstrap layer.\n* **Framework lifecycle:** Use singleton lifecycles only when the dependency is thread-safe and intentionally shared. Allow immutable constants and pure functions.\n\n## Third-Party Libraries & Adaptability\n\n* **Project-owned boundaries:** Wrap external integrations (databases, payment providers, third-party APIs) in project-owned adapters. Domain logic must depend on these local contracts, not vendor SDK types or vendor-specific exceptions.\n* **Capability-focused design:** Shape adapter contracts around the specific capability the application needs, not the vendor's entire API. Do not create one-to-one mirror interfaces.\n* **Pragmatic direct usage:** Allow direct third-party imports only for small, stable utility libraries with no external lifecycle or I/O.\n* **YAGNI abstraction:** Do not add abstractions solely for \"future vendor replacement.\" Introduce adapters to create clean testing seams, isolate I/O, or centralize cross-cutting concerns (retries, timeouts, error mapping).\n\n## Dependency Hygiene and Security\n\n* **Lockfile maintenance:** For deployable applications and services, commit and maintain the ecosystem-appropriate lockfile when repository policy requires it. Never edit lockfiles manually; update them only using the repository's package manager in the same commit as the manifest change.\n* **Scope enforcement:** Do not add, remove, or upgrade dependencies unless explicitly requested by the task or required to resolve a verified security vulnerability.\n* **Upgrade diligence:** When modifying dependencies, review the lockfile diff, transitive changes, release notes, and licenses.\n\n## Formatting\n\n* **Enforce existing rules:** Follow the repository’s configured formatter, linter, editor settings, and file-specific rules. Do not debate styling choices already enforced.\n* **No unsolicited styling:** Do not make unrelated, style-only changes outside files affected by the task. Do not introduce new formatters, configurations, or mass-formatting diffs during unrelated tasks.\n* **Execution:** Run the applicable formatter on changed files. If formatting would create a broad unrelated diff, prefer check mode or isolate formatting in a separate intentional change. Treat unsafe autocorrect modes as code changes—review their diffs and run verification.\n\n## Logging and Observability\n\n* **No ad-hoc logs:** Use the repository’s logging abstraction. Never use print statements, `console.log`, or raw string concatenation for production observability.\n* **Structured data:** Production service logs must be structured and machine-queryable (JSON preferred when no standard exists). Let the framework supply metadata like timestamps and environment context.\n* **Correlation:** Include correlation IDs (`trace_id`, `request_id`, `operation_id`) when available, but do not force irrelevant identifiers into every event.\n* **CLI output:** Keep CLI output human-readable, sending diagnostics and errors to stderr.\n\n## Log Levels and Safety\n\n* **Logging levels:** Log at `DEBUG` for high-volume troubleshooting, `INFO` for operation/business lifecycles, `WARN` for unexpected but recoverable conditions, and `ERROR` for operation failures.\n* **Contextual safety:** Include error types, operations, and stack traces when logging failures. Never log secrets, credentials, auth headers, session tokens, payment data, raw request/responses, or unredacted personal data.\n* **No substitute:** Do not use logs as a substitute for metrics, traces, audit records, or automated tests.\n\n## Git Hygiene\n\n* **Atomic commits:** Make each commit atomic and reviewable (include code, tests, migrations, config, and docs together for one change). Do not combine unrelated refactors or formatting changes with functional fixes.\n* **Verify before commit:** Run the repository's build, formatting, linting, type-checking, and tests before committing. If the baseline fails or checks cannot run, document it in the commit or PR.\n* **Commit conventions:** Follow the repository’s commit-message convention. Use Conventional Commits (`<type>(<scope>): <summary>`) only if already adopted or explicitly requested.\n* **Descriptions & History:** PR descriptions must explain *why* the change is needed, summarize verification, and state limitations. Never amend published commits, force-push shared branches, or alter history unless requested.\n\n---\n\n# TecConcursos — Contexto operacional observado\n\nEste contexto reúne apenas contratos observados no código deste projeto, no HTML fornecido pelo usuário, nas páginas abertas durante a depuração e no log detalhado de 23/07/2026. Ele orienta futuras alterações, mas não substitui uma nova inspeção quando o site mudar.\n\n## Escopo do userscript\n\n- Domínio observado: `https://www.tecconcursos.com.br`.\n- Rotas atendidas pelo bundle: `/questoes/pastas*`, `/questoes/filtrar*`, `/questoes/cadernos/*` e a página de impressão do caderno.\n- A sessão, login, assinatura e permissões pertencem ao navegador e ao TecConcursos. O script não deve armazenar ou registrar credenciais, cookies, tokens ou cabeçalhos.\n- A automação usa a UI real do site, especialmente Angular e seus eventos, em vez de presumir que um `click()` em texto decorativo seja suficiente.\n\n## Identificação de pasta\n\n- Uma pasta foi observada em `/questoes/pastas/{id}`; o exemplo usado foi `6423024`.\n- A página de filtros usa `https://www.tecconcursos.com.br/questoes/filtrar?idPasta={id}`.\n- O ID pode desaparecer ao navegar. Por isso ele deve ser salvo no estado da execução e usado para reconstruir a URL de filtros.\n- O ID da pasta não deve ser inferido de texto visual se já estiver disponível na URL, no estado persistido ou em um atributo de link.\n\n## Filtros de matéria e assunto\n\n- O painel observado mostra a área “Matéria e assunto”. Depois de uma busca, o cabeçalho pode aparecer como “Nome”; o reconhecimento deve considerar os dois estados.\n- A árvore usa itens com `.arvore-item-conteudo.arvore-borda` e `ng-click=\"vm.notificarClick()\"`. O `span.arvore-item-nome` é texto visual; o clique confiável deve ocorrer no contêiner Angular ou usar o fallback Angular validado pelos testes.\n- O assunto de exemplo foi `Coerência. Coesão (Anáfora, Catáfora, Uso dos Conectores - Pronomes Relativos, Conjunções, etc)`.\n- O nome do caderno deve ser o título do plano, por exemplo `Coesão textual - Conectivos básicos`, e não o título da taxonomia do TecConcursos.\n- A seleção de banca é feita clicando no item real da árvore. O nome observado para a banca foi `OBJETIVA CONCURSOS`; outros nomes devem ser resolvidos pelo texto real exibido pelo site.\n- Os anos devem ser selecionados clicando nos itens da árvore. Não se deve apenas escrever o ano em um campo, porque a seleção precisa atualizar o estado Angular do filtro.\n- Critérios solicitados pelo plano: anos `2016` a `2026` conforme a lista configurada, remover questões desatualizadas e remover questões anuladas.\n- O contador de resultados aparece em um `strong.ng-binding`; ele deve ser lido depois que os filtros terminarem de carregar, nunca imediatamente após o clique.\n\n## Criação do caderno\n\n- O campo do nome observado foi `#nomeCadernoId`, com `ng-model=\"vm.nomeCaderno\"` e `ng-model-options=\"{ updateOn: 'blur' }\"`.\n- O procedimento confiável é clicar, preencher, disparar `input`/`change` quando necessário e disparar `blur` para sincronizar o `ng-model`.\n- O botão observado foi `button[ng-click=\"vm.gerarCaderno()\"]`; ele fica desabilitado quando não há nome, filtros ou questões.\n- O estado deve registrar o índice e o título do MAT antes de navegar para o caderno criado.\n\n## Impressão e divisão em partes\n\n- A aba de impressão observada usa `div[role=\"button\"].aba-navegacao` com ícone `glyphicon-print` e texto `Imprimir`.\n- O botão final observado foi `button#confirmar-button` com texto `Imprimir Caderno`.\n- O site limita cada saída a no máximo 200 questões.\n- A primeira parte começa em `1`; as seguintes usam `201`, `401`, `601` e assim por diante, conforme a quantidade encontrada.\n- O campo observado foi `#questaoInicialInput`, cujo `max` é dinâmico.\n- A automação deve persistir o intervalo antes de clicar, salvar somente depois de extrair questões válidas e avançar de forma idempotente.\n- A página pode carregar o HTML das questões gradualmente via AJAX. “Nenhuma questão no primeiro instante” é estado de espera; ausência definitiva depois do timeout é erro diagnosticável.\n- O site também pode chamar `window.print()`. O userscript bloqueia a janela nativa de impressão na página de saída para evitar que o diálogo Ctrl+P interrompa o fluxo.\n\n## Extração e biblioteca local\n\n- O HTML da página de impressão é a fonte observada para enunciado, alternativas e metadados como banca, ano, órgão, cargo e vaga.\n- As partes são consolidadas por identificador/número original; repetir uma parte não pode duplicar questões.\n- A Biblioteca TC organiza os resultados por grupo do plano e permite baixar Excel e HTML.\n- O Excel é XLSX real, com cabeçalhos, linhas de questões, metadados e autofiltro.\n- O Excel deve manter uma coluna `Imagem N` por posição de imagem; imagens PNG/JPEG/GIF obtidas com as credenciais da página são incorporadas nas partes OOXML de mídia/desenho e a origem permanece como fallback quando a incorporação falhar.\n- O HTML interativo usa tema escuro, mantém respostas, mostra feedback de acerto/erro quando `question.answer` existe, marca a alternativa correta, permite alternativas anuladas por duplo clique, salto para questão, filtros e histórico no `localStorage` do próprio documento. A reabertura deve hidratar o estado; reiniciar é uma ação explícita.\n- Fragmentos HTML de enunciado e alternativas devem preservar imagens e transformar URLs relativas em absolutas antes de entrar na biblioteca; não remover imagens durante a sanitização.\n- Exportações e logs devem omitir segredos e não devem enviar dados para serviço externo.\n\n## Estado, retomada e concorrência\n\nEstados operacionais usados pelo projeto: `idle`, `creating-caderno`, `opening-print`, `loading-output`, `waiting-questions`, `extracting`, `saving`, `paused`, `error` e `completed`.\n\nEventos importantes registram horário, `runId`, aba, fase, caderno, parte, intervalo, quantidade esperada/encontrada, URL, ação, erro e snapshot resumido.\n\n- A execução possui `runId` e `ownerId` por aba.\n- O lock usa lease, heartbeat, renovação, liberação e takeover explícito quando obsoleto.\n- Uma aba sem o lease não deve pausar, retomar ou imprimir a execução de outra aba.\n- O estado persistido deve preservar partes concluídas, próximo intervalo, índice do MAT, URL de filtros e diagnóstico do erro.\n- Em 23/07/2026, o log mostrou que os botões Pausar/Retomar eram executados, mas Retomar não tinha uma transição quando a página estava em `/questoes/pastas/{id}`. A correção passou a registrar `opening-filter` e reabrir a `filterUrl` salva antes de continuar.\n- O userscript registra `GM_registerMenuCommand`/`GM_unregisterMenuCommand` para expor `⏹ Parar automação` e `▶ Retomar automação` no menu de comandos do Tampermonkey; o menu interno de gerenciamento com `Edit`/`Delete` não é extensível pelo script.\n- O comando reutiliza `automation.pause()`/`automation.resumePaused()` e os fluxos consultam `ensureRunning` antes de cliques e navegações críticas. Uma navegação já iniciada não é cancelada, mas a próxima transição não deve ocorrer depois que a pausa for persistida.\n\n## Diagnóstico de falhas\n\nMensagens e logs devem distinguir:\n\n1. seletor ausente ou página errada;\n2. elemento presente, mas evento Angular não aplicado;\n3. contador ainda carregando;\n4. impressão nativa interceptada ou popup/dialog bloqueador;\n5. página de saída sem questões depois do timeout;\n6. lock de outra aba;\n7. estado corrompido ou sem URL de retomada.\n\nUm log detalhado deve permitir saber exatamente em qual URL, MAT, parte, intervalo e fase a execução parou. Eventos antigos podem permanecer no histórico; a UI deve destacar a atividade mais recente.\n\n## Regras para futuras alterações\n\n- Antes de alterar seletores, capturar novamente o HTML e confirmar o comportamento Angular.\n- Não substituir cliques de itens da árvore por preenchimento textual sem validar que o modelo Angular foi atualizado.\n- Não remover a persistência de `folderId`, `filterUrl`, partes concluídas, lease ou histórico.\n- Toda correção de fluxo deve incluir um teste de regressão e, quando possível, um teste E2E local com carregamento lento.\n- O teste local simula o TecConcursos; ele não prova que o site real não mudou. Uma execução supervisionada real continua necessária antes de uma bateria longa.\n- Não publicar mudanças no userscript sem regenerar o bundle, executar `npm run check` e conferir a versão/URL de atualização.\n\n## Verificação do projeto\n\nComando principal não interativo:\n\n```powershell\nnpm run check\n```\n\nTestes de fluxo real:\n\n```powershell\nnpm run test:e2e\n```\n\nO bundle publicado usa a URL raw:\n\n`https://raw.githubusercontent.com/YsraEstudos/Tecconcursos/main/tecconcursos-scraper.user.js`\n";
+  var embeddedContent = "# Universal Agent Guidelines (The AI Bible)\r\n\r\nThis document defines the core behavioral, security, design, and coding constraints. These rules are universally applicable to ensure high-quality, maintainable, and correct code output.\r\n\r\n## Rule Precedence\r\n\r\nApply instructions in this order:\r\n1. The user’s explicit task requirements.\r\n2. Repository-level rule files and project documentation.\r\n3. More specific rule files or documentation in the affected directory.\r\n4. Explicit constraints marked `CAVEAT`, `IMPORTANT`, `DO NOT CHANGE`, or equivalent, when they are relevant and not contradicted by a higher-priority rule.\r\n5. Existing local code conventions.\r\n\r\nTreat nearby code comments as context, not absolute authority, unless they clearly define a current technical or business constraint.\r\n\r\nWhen a rule applies only to a specific language, subsystem, framework, or workflow, place it in a path- or context-scoped rule file rather than the universal core.\r\n\r\n## Agent Behavior & Workflow\r\n\r\n* **Verification over assumption:** Treat the first implementation as a draft. Before presenting the result, run the repository's applicable verification checks. If no relevant checks exist or they cannot be run, say so explicitly.\r\n* **Surgical edits:** Make only the modifications necessary for the requested change. Do not rewrite, reformat, or restate unrelated files, functions, or code.\r\n* **Fail gracefully:** If a command or test fails, inspect its output and address the root cause. Do not repeatedly guess at fixes. If blocked by missing information, permissions, or an external dependency, state the blocker and the assumption made.\r\n* **Enforcement over instruction:** When a behavior must happen deterministically, prefer hooks, CI, generators, linters, type-checkers, tests, or scanners over prompt-only instructions. Rely on the repository's active tooling for styling and type-checking rather than debating stylistic prompts.\r\n\r\n## Security and Configuration\r\n\r\n* Never commit, print, log, or embed real secrets, credentials, tokens, or sensitive internal URLs.\r\n* Read secrets and environment-dependent values through the repository’s approved configuration mechanism.\r\n* When adding required configuration, update the relevant example/config schema and documentation.\r\n* Use existing secret-scanning, validation, and CI checks; instructions are not a substitute for enforcement.\r\n\r\n## External Integrations & Canonical References\r\n\r\n* Before changing an external API, SDK, CLI, or domain integration, consult the repository’s canonical integration documentation and, when necessary, the official documentation for the version in use.\r\n* Do not invent endpoints, methods, parameters, versions, or capabilities.\r\n* Prefer the existing client, generated types, schemas, and integration tests. If documentation is missing or ambiguous, state the assumption rather than guessing.\r\n\r\n## Shared-State Changes\r\n\r\n* For changes that write shared or persistent state, follow the repository’s existing transaction, locking, idempotency, validation, and retry conventions.\r\n* Add or update tests for relevant failure, rollback, and concurrency cases when applicable.\r\n\r\n## Code Style\r\n\r\n* Follow the repository’s existing formatter, linter, naming, directory, and framework conventions. Do not introduce style-only rewrites in a functional change.\r\n* Prefer small, cohesive functions and modules. Treat 4–20 lines per function and 500 lines per handwritten production module as review targets, not hard limits.\r\n* Split code when responsibilities, dependencies, or reasons to change are independent. Do not split cohesive workflows merely to satisfy a line-count rule.\r\n* Prefer guard clauses and early returns when they reduce nesting. Avoid more than two logical control-flow levels in new business logic unless deeper nesting makes resource lifetime, transactions, or error handling clearer.\r\n* Keep module paths predictable. Follow the repository’s structure first; use framework conventions when the repository has no established alternative.\r\n\r\n## Data Transformations and Performance\r\n\r\n* For repeated membership checks, grouping, or joins over in-memory collections, prefer an appropriate Set, Map, dictionary, index, or database query over repeated linear scans.\r\n* Avoid avoidable repeated scans inside loops when an index can preserve correctness and substantially improve complexity.\r\n* Nested loops are acceptable for inherently pairwise, matrix, cross-product, bounded-small-data, or clearer algorithms. Do not optimize solely to remove nesting.\r\n* Preserve required ordering, memory limits, and semantics. Profile or benchmark performance-sensitive paths before introducing non-obvious optimization.\r\n\r\n## Naming\r\n\r\n* Use names that describe the domain role, action, or invariant and are distinctive within their module and search context.\r\n* Avoid vague catch-all modules or identifiers such as `utils`, `helpers`, `data`, or generic `manager` unless they are established framework conventions or include a precise domain qualifier.\r\n* Name boolean predicates clearly using the convention appropriate to the language and meaning, such as `is`, `has`, `can`, `should`, `was`, or `needs`.\r\n\r\n## Types\r\n\r\n* Make types explicit at public APIs and system boundaries: HTTP, CLI, database, queue, filesystem, external APIs, serialization, and complex domain operations.\r\n* Allow local type inference when the inferred type is clear and preserves type safety.\r\n* In TypeScript, do not introduce implicit `any`. Avoid explicit `any`; use `unknown` with runtime validation when input is uncertain.\r\n* In Python, type public functions and structured data. Prefer domain models, `TypedDict`, `dataclass`, or typed mappings over untyped dictionaries when shape matters.\r\n* Introduce domain-specific types for values whose accidental interchange would cause meaningful bugs, such as money, units, identifiers, or validated state.\r\n\r\n## Duplication and Abstraction\r\n\r\n* Do not duplicate business rules, validation rules, security policy, or protocol behavior that must remain consistent across call sites.\r\n* Extract a shared abstraction when three similar call sites reveal a stable shared contract, or earlier when one policy must change atomically everywhere.\r\n* Do not abstract code merely because it looks syntactically similar. Preserve separate implementations when their future changes are likely to diverge.\r\n\r\n## Errors\r\n\r\n* For validation and internal diagnostic errors, include the operation or field, the expected contract, and a safe summary of the received value.\r\n* Redact, hash, omit, or truncate secrets, credentials, session identifiers, personal data, and large payloads.\r\n* Keep user-facing errors safe and actionable; keep implementation detail in protected logs or structured diagnostics.\r\n\r\n## Comments and Documentation\r\n\r\n* **Preserve intent:** Preserve useful comments and docstrings during refactoring. Update or relocate them when surrounding code changes; remove them only when obsolete, inaccurate, redundant with clear code, or replaced by a more durable source of truth.\r\n* **Explain why, not what:** Write comments to document the \"why\" and explain non-obvious logic, invariants, or external limitations. Never write comments that merely restate self-documenting code (e.g., `# Increment counter`).\r\n* **Workarounds and Provenance:** When introducing code to fix a production incident, upstream bug, or version conflict, include a comment stating:\r\n  * The reason for the workaround.\r\n  * A stable issue, ticket, or commit reference.\r\n  * The affected dependency/version and the removal condition (e.g., target upgrade version).\r\n  * *A comment explains the exception; a regression test prevents its accidental removal.*\r\n* **Do not leak data:** Never include real credentials, private URLs, customer data, or sensitive incident details in comments.\r\n\r\n## Public APIs and Interfaces\r\n\r\n* **Document boundaries:** Document stable consumer-facing contracts according to the language and repository convention. Describe behavior, constraints, side effects, and compatibility expectations when they are not evident from types or usage.\r\n* **Document the contract:** State the intent, key parameters, expected return values, exceptions raised, and side effects. Do not add boilerplate docstrings that only repeat obvious signatures.\r\n* **Conditional examples:** Include code usage examples only when the invocation, state requirements, or return semantics are complex or non-obvious. Prefer verified automated tests over documentation examples.\r\n\r\n## Verification and Test Automation\r\n\r\n* **Verification command:** Provide one documented, non-interactive command (e.g., `npm run verify` or `make verify`) that executes all fast deterministic checks (formatting, linting, type-checking, and unit tests) before presenting a change.\r\n* **Readiness guarantee:** Do not claim a change is verified if the required checks could not run. The CI must execute the full required test matrix.\r\n\r\n## Test Coverage and Regressions\r\n\r\n* **Tested behavior:** Add or update tests for every behavior change that can fail (business rules, validation, serialization, errors, security). Test observable behavior through stable public interfaces; do not test trivial private helpers just for coverage.\r\n* **Regression testing:** Every bug fix must include a regression test that fails before the fix is applied. If a deterministic test is not feasible, state why and add the nearest reliable automated coverage.\r\n\r\n## External I/O and Test Doubles\r\n\r\n* **Isolation boundary:** Unit tests must not call production services or depend on uncontrolled network access, shared databases, system time, randomness, or machine-specific environments.\r\n* **Pragmatic doubles:** Prefer a reusable named fake for complex dependencies. Use focused stubs, mocks, spies, or patches only for one-off scenarios (e.g., timeouts, retries, or verifying side effects).\r\n* **No scattered patching:** Do not scatter patches of third-party libraries. Wrap external services in thin project-owned adapters and test the adapter with focused integration tests.\r\n\r\n## Test Qualities and Determinism\r\n\r\n* **F.I.R.S.T. unit tests:** Keep unit tests Fast, Independent (no shared mutable state), Repeatable (order-independent), Self-validating, and Timely (written alongside code).\r\n* **Deterministic environment:** Freeze or inject time, randomness, locale, timezone, and API responses to eliminate flakiness.\r\n* **Cleanup and isolation:** New tests must not introduce shared mutable state, order dependence, or environment leakage, and must respect the repository's supported execution model.\r\n* **Readable naming:** Name tests as readable behavior statements including the condition and expected outcome (e.g., `test_order_total_includes_tax_when_region_is_eu`), preferring one behavior per test.\r\n\r\n## Dependencies and Composition\r\n\r\n* **Explicit injection:** Prefer constructor injection for long-lived dependencies and function parameters for transient operation values. Avoid hidden dependencies via mutable global state or static service locators.\r\n* **Composition root:** In application code with meaningful infrastructure boundaries, keep vendor-specific construction and wiring at the composition root or framework bootstrap layer.\r\n* **Framework lifecycle:** Use singleton lifecycles only when the dependency is thread-safe and intentionally shared. Allow immutable constants and pure functions.\r\n\r\n## Third-Party Libraries & Adaptability\r\n\r\n* **Project-owned boundaries:** Wrap external integrations (databases, payment providers, third-party APIs) in project-owned adapters. Domain logic must depend on these local contracts, not vendor SDK types or vendor-specific exceptions.\r\n* **Capability-focused design:** Shape adapter contracts around the specific capability the application needs, not the vendor's entire API. Do not create one-to-one mirror interfaces.\r\n* **Pragmatic direct usage:** Allow direct third-party imports only for small, stable utility libraries with no external lifecycle or I/O.\r\n* **YAGNI abstraction:** Do not add abstractions solely for \"future vendor replacement.\" Introduce adapters to create clean testing seams, isolate I/O, or centralize cross-cutting concerns (retries, timeouts, error mapping).\r\n\r\n## Dependency Hygiene and Security\r\n\r\n* **Lockfile maintenance:** For deployable applications and services, commit and maintain the ecosystem-appropriate lockfile when repository policy requires it. Never edit lockfiles manually; update them only using the repository's package manager in the same commit as the manifest change.\r\n* **Scope enforcement:** Do not add, remove, or upgrade dependencies unless explicitly requested by the task or required to resolve a verified security vulnerability.\r\n* **Upgrade diligence:** When modifying dependencies, review the lockfile diff, transitive changes, release notes, and licenses.\r\n\r\n## Formatting\r\n\r\n* **Enforce existing rules:** Follow the repository’s configured formatter, linter, editor settings, and file-specific rules. Do not debate styling choices already enforced.\r\n* **No unsolicited styling:** Do not make unrelated, style-only changes outside files affected by the task. Do not introduce new formatters, configurations, or mass-formatting diffs during unrelated tasks.\r\n* **Execution:** Run the applicable formatter on changed files. If formatting would create a broad unrelated diff, prefer check mode or isolate formatting in a separate intentional change. Treat unsafe autocorrect modes as code changes—review their diffs and run verification.\r\n\r\n## Logging and Observability\r\n\r\n* **No ad-hoc logs:** Use the repository’s logging abstraction. Never use print statements, `console.log`, or raw string concatenation for production observability.\r\n* **Structured data:** Production service logs must be structured and machine-queryable (JSON preferred when no standard exists). Let the framework supply metadata like timestamps and environment context.\r\n* **Correlation:** Include correlation IDs (`trace_id`, `request_id`, `operation_id`) when available, but do not force irrelevant identifiers into every event.\r\n* **CLI output:** Keep CLI output human-readable, sending diagnostics and errors to stderr.\r\n\r\n## Log Levels and Safety\r\n\r\n* **Logging levels:** Log at `DEBUG` for high-volume troubleshooting, `INFO` for operation/business lifecycles, `WARN` for unexpected but recoverable conditions, and `ERROR` for operation failures.\r\n* **Contextual safety:** Include error types, operations, and stack traces when logging failures. Never log secrets, credentials, auth headers, session tokens, payment data, raw request/responses, or unredacted personal data.\r\n* **No substitute:** Do not use logs as a substitute for metrics, traces, audit records, or automated tests.\r\n\r\n## Git Hygiene\r\n\r\n* **Atomic commits:** Make each commit atomic and reviewable (include code, tests, migrations, config, and docs together for one change). Do not combine unrelated refactors or formatting changes with functional fixes.\r\n* **Verify before commit:** Run the repository's build, formatting, linting, type-checking, and tests before committing. If the baseline fails or checks cannot run, document it in the commit or PR.\r\n* **Commit conventions:** Follow the repository’s commit-message convention. Use Conventional Commits (`<type>(<scope>): <summary>`) only if already adopted or explicitly requested.\r\n* **Descriptions & History:** PR descriptions must explain *why* the change is needed, summarize verification, and state limitations. Never amend published commits, force-push shared branches, or alter history unless requested.\r\n\r\n---\r\n\r\n# TecConcursos — Contexto operacional observado\r\n\r\nEste contexto reúne apenas contratos observados no código deste projeto, no HTML fornecido pelo usuário, nas páginas abertas durante a depuração e no log detalhado de 23/07/2026. Ele orienta futuras alterações, mas não substitui uma nova inspeção quando o site mudar.\r\n\r\n## Escopo do userscript\r\n\r\n- Domínio observado: `https://www.tecconcursos.com.br`.\r\n- O bundle é carregado em qualquer rota `https://www.tecconcursos.com.br/*` (e no domínio sem `www`) para que a Biblioteca TC esteja disponível globalmente. A coleta de questões continua limitada às páginas de caderno/filtro; a busca de reutilização usa a listagem de `/questoes/pastas/{id}` e a página do caderno/ impressão.\n- A sessão, login, assinatura e permissões pertencem ao navegador e ao TecConcursos. O script não deve armazenar ou registrar credenciais, cookies, tokens ou cabeçalhos.\r\n- A automação usa a UI real do site, especialmente Angular e seus eventos, em vez de presumir que um `click()` em texto decorativo seja suficiente.\r\n\r\n## Identificação de pasta\r\n\r\n- Uma pasta foi observada em `/questoes/pastas/{id}`; o exemplo usado foi `6423024`.\r\n- A página de filtros usa `https://www.tecconcursos.com.br/questoes/filtrar?idPasta={id}`.\r\n- O ID pode desaparecer ao navegar. Por isso ele deve ser salvo no estado da execução e usado para reconstruir a URL de filtros.\r\n- O ID da pasta não deve ser inferido de texto visual se já estiver disponível na URL, no estado persistido ou em um atributo de link.\n- A busca de materiais deve comparar o nome exato do MAT com links `a[href*='/questoes/cadernos/']`; não deve tratar links de `/questoes/pastas/` como cadernos. Se não encontrar o caderno, somente então deve abrir a URL de filtros e criar um novo.\n\r\n## Filtros de matéria e assunto\r\n\r\n- O painel observado mostra a área “Matéria e assunto”. Depois de uma busca, o cabeçalho pode aparecer como “Nome”; o reconhecimento deve considerar os dois estados.\r\n- A árvore usa itens com `.arvore-item-conteudo.arvore-borda` e `ng-click=\"vm.notificarClick()\"`. O `span.arvore-item-nome` é texto visual; o clique confiável deve ocorrer no contêiner Angular ou usar o fallback Angular validado pelos testes.\r\n- O assunto de exemplo foi `Coerência. Coesão (Anáfora, Catáfora, Uso dos Conectores - Pronomes Relativos, Conjunções, etc)`.\r\n- O nome do caderno deve ser o título do plano, por exemplo `Coesão textual - Conectivos básicos`, e não o título da taxonomia do TecConcursos.\r\n- A seleção de banca é feita clicando no item real da árvore. O nome observado para a banca foi `OBJETIVA CONCURSOS`; outros nomes devem ser resolvidos pelo texto real exibido pelo site.\r\n- Os anos devem ser selecionados clicando nos itens da árvore. Não se deve apenas escrever o ano em um campo, porque a seleção precisa atualizar o estado Angular do filtro.\r\n- Critérios solicitados pelo plano: anos `2016` a `2026` conforme a lista configurada, remover questões desatualizadas e remover questões anuladas.\r\n- O contador de resultados aparece em um `strong.ng-binding`; ele deve ser lido depois que os filtros terminarem de carregar, nunca imediatamente após o clique.\r\n\r\n## Criação do caderno\r\n\r\n- O campo do nome observado foi `#nomeCadernoId`, com `ng-model=\"vm.nomeCaderno\"` e `ng-model-options=\"{ updateOn: 'blur' }\"`.\r\n- O procedimento confiável é clicar, preencher, disparar `input`/`change` quando necessário e disparar `blur` para sincronizar o `ng-model`.\r\n- O botão observado foi `button[ng-click=\"vm.gerarCaderno()\"]`; ele fica desabilitado quando não há nome, filtros ou questões.\r\n- O estado deve registrar o índice e o título do MAT antes de navegar para o caderno criado.\r\n\r\n## Impressão e divisão em partes\r\n\r\n- A aba de impressão observada usa `div[role=\"button\"].aba-navegacao` com ícone `glyphicon-print` e texto `Imprimir`.\r\n- O botão final observado foi `button#confirmar-button` com texto `Imprimir Caderno`.\r\n- O site limita cada saída a no máximo 200 questões.\r\n- A primeira parte começa em `1`; as seguintes usam `201`, `401`, `601` e assim por diante, conforme a quantidade encontrada.\r\n- O campo observado foi `#questaoInicialInput`, cujo `max` é dinâmico.\r\n- A automação deve persistir o intervalo antes de clicar, salvar somente depois de extrair questões válidas e avançar de forma idempotente.\r\n- A página pode carregar o HTML das questões gradualmente via AJAX. “Nenhuma questão no primeiro instante” é estado de espera; ausência definitiva depois do timeout é erro diagnosticável.\r\n- O site também pode chamar `window.print()`. O userscript bloqueia a janela nativa de impressão na página de saída para evitar que o diálogo Ctrl+P interrompa o fluxo.\r\n\r\n## Extração e biblioteca local\r\n\r\n- O HTML da página de impressão é a fonte observada para enunciado, alternativas e metadados como banca, ano, órgão, cargo e vaga.\r\n- As partes são consolidadas por identificador/número original; repetir uma parte não pode duplicar questões.\r\n- A Biblioteca TC organiza os resultados por grupo do plano e permite baixar Excel e HTML.\r\n- O Excel é XLSX real, com cabeçalhos, linhas de questões, metadados e autofiltro.\r\n- O Excel deve manter uma coluna `Imagem N` por posição de imagem; imagens PNG/JPEG/GIF obtidas com as credenciais da página são incorporadas nas partes OOXML de mídia/desenho e a origem permanece como fallback quando a incorporação falhar.\r\n- O HTML interativo usa tema escuro, mantém respostas, mostra feedback de acerto/erro quando `question.answer` existe, marca a alternativa correta, permite alternativas anuladas por duplo clique, salto para questão, filtros e histórico no `localStorage` do próprio documento. A reabertura deve hidratar o estado; reiniciar é uma ação explícita.\r\n- Fragmentos HTML de enunciado e alternativas devem preservar imagens e transformar URLs relativas em absolutas antes de entrar na biblioteca; não remover imagens durante a sanitização.\r\n- Exportações e logs devem omitir segredos e não devem enviar dados para serviço externo.\r\n\r\n## Estado, retomada e concorrência\r\n\r\nEstados operacionais usados pelo projeto: `idle`, `creating-caderno`, `opening-print`, `loading-output`, `waiting-questions`, `extracting`, `saving`, `paused`, `error` e `completed`.\r\n\r\nEventos importantes registram horário, `runId`, aba, fase, caderno, parte, intervalo, quantidade esperada/encontrada, URL, ação, erro e snapshot resumido.\r\n\r\n- A execução possui `runId` e `ownerId` por aba.\r\n- O lock usa lease, heartbeat, renovação, liberação e takeover explícito quando obsoleto.\r\n- Uma aba sem o lease não pode retomar ou imprimir a execução de outra aba; um comando explícito de Parar pode encaminhar uma solicitação à aba proprietária, mas somente a aba proprietária grava a pausa e libera o lease.\n- O estado persistido deve preservar partes concluídas, próximo intervalo, índice do MAT, URL de filtros, URL da pasta, modo `reuseExistingCadernos` e diagnóstico do erro.\n- Em 23/07/2026, o log mostrou que os botões Pausar/Retomar eram executados, mas Retomar não tinha uma transição quando a página estava em `/questoes/pastas/{id}`. A correção passou a registrar `opening-filter` e reabrir a `filterUrl` salva antes de continuar.\r\n- O userscript registra `GM_registerMenuCommand`/`GM_unregisterMenuCommand` para expor `⏹ Parar automação` e `▶ Retomar automação` no menu de comandos do Tampermonkey; o menu interno de gerenciamento com `Edit`/`Delete` não é extensível pelo script.\r\n- O comando reutiliza `automation.pause()`/`automation.resumePaused()` e os fluxos consultam `ensureRunning` antes de cliques e navegações críticas. Uma navegação já iniciada não é cancelada, mas a próxima transição não deve ocorrer depois que a pausa for persistida.\r\n\r\n## Diagnóstico de falhas\r\n\r\nMensagens e logs devem distinguir:\r\n\r\n1. seletor ausente ou página errada;\r\n2. elemento presente, mas evento Angular não aplicado;\r\n3. contador ainda carregando;\r\n4. impressão nativa interceptada ou popup/dialog bloqueador;\r\n5. página de saída sem questões depois do timeout;\r\n6. lock de outra aba;\r\n7. estado corrompido ou sem URL de retomada.\r\n\r\nUm log detalhado deve permitir saber exatamente em qual URL, MAT, parte, intervalo e fase a execução parou. Eventos antigos podem permanecer no histórico; a UI deve destacar a atividade mais recente.\r\n\r\n## Regras para futuras alterações\r\n\r\n- Antes de alterar seletores, capturar novamente o HTML e confirmar o comportamento Angular.\r\n- Não substituir cliques de itens da árvore por preenchimento textual sem validar que o modelo Angular foi atualizado.\r\n- Não remover a persistência de `folderId`, `filterUrl`, partes concluídas, lease ou histórico.\r\n- Toda correção de fluxo deve incluir um teste de regressão e, quando possível, um teste E2E local com carregamento lento.\r\n- O teste local simula o TecConcursos; ele não prova que o site real não mudou. Uma execução supervisionada real continua necessária antes de uma bateria longa.\r\n- Não publicar mudanças no userscript sem regenerar o bundle, executar `npm run check` e conferir a versão/URL de atualização.\r\n\r\n## Verificação do projeto\r\n\r\nComando principal não interativo:\r\n\r\n```powershell\r\nnpm run check\r\n```\r\n\r\nTestes de fluxo real:\r\n\r\n```powershell\r\nnpm run test:e2e\r\n```\r\n\r\nO bundle publicado usa a URL raw:\r\n\r\n`https://raw.githubusercontent.com/YsraEstudos/Tecconcursos/main/tecconcursos-scraper.user.js`\r\n";
   var content = embeddedContent;
   if (embeddedContent === "__TEC_AI_CONTEXT__" && typeof module !== "undefined" && module.exports) {
     try {
@@ -3929,6 +4373,7 @@
     style.textContent = "#tec-library-launcher{position:fixed;left:18px;bottom:18px;z-index:2147483646;border:0;border-radius:999px;background:#1d4ed8;color:#fff;padding:12px 16px;font:700 14px system-ui;box-shadow:0 8px 22px #1e3a8a66;cursor:pointer}#tec-library-panel{position:fixed;left:18px;bottom:18px;z-index:2147483647;width:min(460px,calc(100vw - 36px));max-height:min(720px,calc(100vh - 36px));display:none;flex-direction:column;overflow:hidden;border-radius:16px;background:#f8fafc;color:#172554;box-shadow:0 18px 55px #0f172a55;font:14px system-ui}#tec-library-panel.open{display:flex}#tec-library-panel .head{display:flex;align-items:center;gap:10px;padding:15px 16px;background:linear-gradient(135deg,#1d4ed8,#0f766e);color:#fff}#tec-library-panel .head strong{font-size:16px}#tec-library-panel .head button{margin-left:auto;border:0;background:#ffffff22;color:#fff;border-radius:8px;padding:6px 9px;cursor:pointer}#tec-library-panel .tabs{display:flex;gap:5px;padding:10px 12px;border-bottom:1px solid #dbeafe;background:#fff;overflow-x:auto}#tec-library-panel .tabs button{border:0;border-radius:7px;background:#eff6ff;color:#1e3a8a;padding:7px 10px;cursor:pointer;font-weight:700;white-space:nowrap}#tec-library-panel .tabs button.active{background:#1d4ed8;color:#fff}#tec-library-panel .body{overflow:auto;padding:14px 16px}#tec-library-panel label{display:block;margin:8px 0 4px;font-weight:700}#tec-library-panel textarea,#tec-library-panel input{width:100%;box-sizing:border-box;border:1px solid #bfdbfe;border-radius:8px;padding:8px;font:13px ui-monospace,Consolas,monospace}#tec-library-panel textarea{min-height:106px;resize:vertical}#tec-library-panel .actions{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}#tec-library-panel .actions button,#tec-library-panel .entry-actions button{border:0;border-radius:8px;background:#1d4ed8;color:#fff;padding:8px 10px;font-weight:700;cursor:pointer}#tec-library-panel .actions button.secondary,#tec-library-panel .entry-actions button.secondary{background:#475569}#tec-library-panel .actions button.danger,#tec-library-panel .entry-actions button.danger{background:#b91c1c}#tec-library-panel .status{min-height:36px;color:#0f766e;font-size:13px;line-height:1.35}#tec-library-panel .hint{padding:10px;border-radius:9px;background:#eff6ff;color:#1e3a8a;font-size:13px;line-height:1.4}#tec-library-panel details{margin:8px 0;border:1px solid #dbeafe;border-radius:9px;background:#fff}#tec-library-panel summary{cursor:pointer;padding:9px 10px;font-weight:700}#tec-library-panel .entry{padding:8px 10px;border-top:1px solid #eff6ff}#tec-library-panel .entry button.entry-open{border:0;background:transparent;color:#1d4ed8;padding:0;text-align:left;font:700 13px system-ui;cursor:pointer}#tec-library-panel .entry small{display:block;margin-top:3px;color:#64748b}#tec-library-panel .entry-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}#tec-library-panel .entry-actions button{font-size:12px;padding:6px 8px}#tec-library-panel .ai-context{margin:0;max-height:500px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid #dbeafe;border-radius:9px;background:#fff;color:#0f172a;padding:12px;font:12px/1.5 ui-monospace,Consolas,monospace}#tec-library-panel .ai-context-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin:10px 0}";
     documentNode.head.appendChild(style);
     style.textContent += "#tec-library-panel .completion-summary{margin:10px 0;border:1px solid #dbeafe;border-radius:9px;background:#fff;padding:10px}#tec-library-panel .completion-summary strong{display:block;margin-bottom:7px}#tec-library-panel .completion-summary ol{margin:0;padding-left:24px}#tec-library-panel .completion-summary li{padding:3px 0;color:#334155}#tec-library-panel .completion-summary li.completed{color:#047857}#tec-library-panel .completion-summary li.failed{color:#b91c1c}#tec-library-panel .completion-summary li.active{color:#1d4ed8}";
+    style.textContent += "#tec-library-launcher-wrap{position:fixed;left:18px;bottom:18px;z-index:2147483646;display:flex;align-items:stretch;gap:6px}#tec-library-launcher{position:static;left:auto;bottom:auto}#tec-library-pause{border:0;border-radius:999px;background:#b91c1c;color:#fff;padding:0 13px;font:700 13px system-ui;box-shadow:0 8px 22px #7f1d1d55;cursor:pointer;white-space:nowrap}#tec-library-pause:hover{background:#991b1b}#tec-library-pause:disabled{background:#94a3b8;box-shadow:none;cursor:not-allowed;opacity:.85}";
 
     var launcher = button(documentNode, "", "");
     launcher.id = "tec-library-launcher";
@@ -3940,12 +4385,20 @@
     launcherStatus.style.opacity = "0.92";
     launcher.appendChild(launcherLabel);
     launcher.appendChild(launcherStatus);
+    var launcherPause = button(documentNode, "⏹ Parar", "");
+    launcherPause.id = "tec-library-pause";
+    launcherPause.dataset.tecScraperVersion = "2.5.17";
+    launcherPause.setAttribute("aria-label", "Parar automação");
+    var launcherWrap = documentNode.createElement("div");
+    launcherWrap.id = "tec-library-launcher-wrap";
+    launcherWrap.appendChild(launcher);
+    launcherWrap.appendChild(launcherPause);
     var panel = documentNode.createElement("section");
     panel.id = "tec-library-panel";
-    panel.dataset.tecScraperVersion = "2.5.15";
-    launcher.dataset.tecScraperVersion = "2.5.15";
-    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.5.15</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
-    documentNode.body.appendChild(launcher);
+    panel.dataset.tecScraperVersion = "2.5.17";
+    launcher.dataset.tecScraperVersion = "2.5.17";
+    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.5.17</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
+    documentNode.body.appendChild(launcherWrap);
     documentNode.body.appendChild(panel);
     var body = panel.querySelector(".body");
     var activeTab = "automation";
@@ -4049,6 +4502,8 @@
       var label = progressLabel(progress);
       launcherStatus.textContent = label;
       launcher.title = progressDetails(progress);
+      launcherPause.disabled = !progress.running;
+      launcherPause.title = progress.running ? "Parar a automação agora. " + progressDetails(progress) : "A automação não está em execução.";
       var progressNode = body.querySelector("#tec-progress");
       if (progressNode) {
         progressNode.textContent = progressDetails(progress);
@@ -4056,6 +4511,16 @@
       }
       updateProgressTimer(progress);
       if (includeSummary !== false) renderCompletionSummary();
+    }
+
+    function handleLauncherPause() {
+      if (launcherPause.disabled) return;
+      try {
+        Promise.resolve(config.onPause && config.onPause("library-launcher")).then(function (message) {
+          setStatus(message || "Pausa solicitada.", false);
+          refreshProgress();
+        }).catch(handleAutomationError);
+      } catch (error) { handleAutomationError(error); }
     }
 
     function handleAutomationError(error) {
@@ -4082,6 +4547,12 @@
       folderInput.addEventListener("input", function () {
         if (config.onFolderIdChange) config.onFolderIdChange(folderInput.value);
       });
+      var createAction = body.querySelector("[data-action='create']");
+      if (createAction && createAction.parentNode) {
+        var restartAction = button(documentNode, "Reiniciar busca de materiais", "secondary");
+        restartAction.dataset.action = "restart";
+        createAction.parentNode.insertBefore(restartAction, createAction.nextSibling);
+      }
       setStatus(typeof config.getStatus === "function" ? config.getStatus() : "Pronto.", false);
       refreshProgress();
       body.querySelector("[data-action='import']").addEventListener("click", function () {
@@ -4101,6 +4572,9 @@
       });
       body.querySelector("[data-action='create']").addEventListener("click", function () {
         try { Promise.resolve(config.onCreate && config.onCreate(body.querySelector("#tec-folder-id").value)).then(function (message) { setStatus(message || "Automação iniciada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
+      });
+      body.querySelector("[data-action='restart']").addEventListener("click", function () {
+        try { Promise.resolve(config.onRestart && config.onRestart(body.querySelector("#tec-folder-id").value)).then(function (message) { setStatus(message || "Busca de materiais reiniciada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
       });
       body.querySelector("[data-action='current']").addEventListener("click", function () {
         try { Promise.resolve(config.onCurrent && config.onCurrent()).then(function (message) { setStatus(message || "Exportação iniciada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
@@ -4190,10 +4664,14 @@
       if (activeTab === "library") libraryView(); else if (activeTab === "ai-context") aiContextView(); else automationView();
       refreshProgress();
     }
-    launcher.addEventListener("click", function () { panel.classList.add("open"); launcher.style.display = "none"; render(); });
+    launcher.addEventListener("click", function () { panel.classList.add("open"); launcherWrap.style.display = "none"; render(); });
+    launcherPause.addEventListener("click", function (event) {
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      handleLauncherPause();
+    });
     panel.querySelector("[data-action='close']").addEventListener("click", function () {
       panel.classList.remove("open");
-      launcher.style.display = "block";
+      launcherWrap.style.display = "flex";
       scheduleProgressRefresh(false);
     });
     Array.from(panel.querySelectorAll("[data-tab]")).forEach(function (tab) {
@@ -4204,7 +4682,7 @@
       pageWindow.addEventListener("storage", function () { scheduleProgressRefresh(false); });
     }
     refreshProgress(false);
-    return { panel: panel, open: function () { panel.classList.add("open"); launcher.style.display = "none"; render(); }, refresh: render, setStatus: setStatus };
+    return { panel: panel, launcher: launcher, pauseButton: launcherPause, open: function () { panel.classList.add("open"); launcherWrap.style.display = "none"; render(); }, refresh: render, setStatus: setStatus };
   }
 
   return { createPanel: createPanel, completionSummary: completionSummary };
@@ -4270,10 +4748,12 @@
   "use strict";
 
   var OUTPUT_PATH = /\/questoes\/cadernos\/\d+\/imprimir(?:\/|$)/i;
+  var IMAGE_PLACEHOLDER = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
   var PRINT_TARGETS = [];
   var GUARD_RECORDS = [];
   var PROTOTYPE_PATCHES = [];
   var BRIDGE_DOCUMENTS = [];
+  var IMAGE_GUARD_RECORDS = [];
 
   function locationBase(target) {
     var location = target && target.location;
@@ -4292,6 +4772,57 @@
 
   function isPrintRoute(value, target) {
     return OUTPUT_PATH.test(routePath(value, target));
+  }
+
+  function imageSource(value, target) {
+    var raw = String(value == null ? "" : value).trim();
+    if (!raw || raw === IMAGE_PLACEHOLDER) return "";
+    try { return new URL(raw, locationBase(target)).href; } catch (_) { return raw; }
+  }
+
+  function deferImageLoading(image, target) {
+    if (!image || typeof image.getAttribute !== "function" || typeof image.setAttribute !== "function") return false;
+    if (image.getAttribute("data-tec-image-deferred") === "1") return false;
+    var source = image.getAttribute("data-tec-original-src") || image.getAttribute("src") || image.getAttribute("data-src") || "";
+    var sourceSet = image.getAttribute("data-tec-original-srcset") || image.getAttribute("srcset") || "";
+    if (!source && !sourceSet) return false;
+    if (source) image.setAttribute("data-tec-original-src", imageSource(source, target));
+    if (sourceSet) {
+      image.setAttribute("data-tec-original-srcset", sourceSet);
+      if (typeof image.removeAttribute === "function") image.removeAttribute("srcset");
+    }
+    image.setAttribute("loading", "lazy");
+    image.setAttribute("decoding", "async");
+    if (source && source !== IMAGE_PLACEHOLDER) image.setAttribute("src", IMAGE_PLACEHOLDER);
+    image.setAttribute("data-tec-image-deferred", "1");
+    return true;
+  }
+
+  function installImageGuard(target, documentNode) {
+    if (!documentNode) return false;
+    var existing = IMAGE_GUARD_RECORDS.find(function (item) { return item.target === target && item.document === documentNode; });
+    if (existing) return true;
+    var scan = function (rootNode) {
+      if (!rootNode) return;
+      if (String(rootNode.tagName || "").toUpperCase() === "IMG") deferImageLoading(rootNode, target);
+      if (typeof rootNode.querySelectorAll === "function") Array.from(rootNode.querySelectorAll("img")).forEach(function (image) { deferImageLoading(image, target); });
+    };
+    scan(documentNode);
+    var Observer = target && target.MutationObserver;
+    if (!Observer && documentNode.defaultView) Observer = documentNode.defaultView.MutationObserver;
+    var observer = null;
+    if (typeof Observer === "function") {
+      try {
+        observer = new Observer(function (mutations) {
+          mutations.forEach(function (mutation) {
+            Array.from(mutation.addedNodes || []).forEach(scan);
+          });
+        });
+        observer.observe(documentNode.documentElement || documentNode, { childList: true, subtree: true });
+      } catch (_) { observer = null; }
+    }
+    IMAGE_GUARD_RECORDS.push({ target: target, document: documentNode, observer: observer });
+    return true;
   }
 
   function formAction(form) {
@@ -4454,7 +4985,7 @@
   }
 
   function pageWorldSource() {
-    return "(function(){if(window.__tecConcursosPrintGuard)return;var route=/\\/questoes\\/cadernos\\/\\d+\\/imprimir(?:\\/|$)/i.test(String(location&&location.pathname||''));if(!route)return;var isPrint=function(value){if(value==null||value==='')return false;try{return /\\/questoes\\/cadernos\\/\\d+\\/imprimir(?:\\/|$)/i.test(new URL(String(value),location.href).pathname);}catch(_){return /\\/questoes\\/cadernos\\/\\d+\\/imprimir/i.test(String(value));}};var blocked=function(){return undefined;};try{Object.defineProperty(window,'print',{configurable:false,enumerable:true,get:function(){return blocked;},set:function(){}});}catch(_){try{window.print=blocked;}catch(__){}}var originalOpen=window.open;if(typeof originalOpen==='function'){try{Object.defineProperty(window,'open',{configurable:true,writable:true,value:function(url){if(isPrint(url))return null;return originalOpen.apply(this,arguments);}});}catch(_){}}var proto=window.HTMLFormElement&&window.HTMLFormElement.prototype;['submit','requestSubmit'].forEach(function(name){if(!proto||typeof proto[name]!=='function')return;var original=proto[name];try{Object.defineProperty(proto,name,{configurable:true,writable:true,value:function(){var action=this.getAttribute&&this.getAttribute('action')||this.action||'';if(isPrint(action))return undefined;return original.apply(this,arguments);}});}catch(_){}});var cancel=function(event){var node=event&&event.target;var form=node&&(node.form||node);var action=form&&(form.getAttribute&&form.getAttribute('action')||form.action||'');var href=node&&(node.href||(node.getAttribute&&node.getAttribute('href')));if(isPrint(action)||isPrint(href)){event.preventDefault&&event.preventDefault();event.stopImmediatePropagation&&event.stopImmediatePropagation();event.stopPropagation&&event.stopPropagation();}};document.addEventListener('click',cancel,true);document.addEventListener('submit',cancel,true);try{Object.defineProperty(window,'__tecConcursosPrintGuard',{configurable:false,value:true});}catch(_){window.__tecConcursosPrintGuard=true;}})();";
+    return String.raw`(function(){if(window.__tecConcursosPrintGuard)return;var route=/\/questoes\/cadernos\/\d+\/imprimir(?:\/|$)/i.test(String(location&&location.pathname||''));if(!route)return;var placeholder='${IMAGE_PLACEHOLDER}';var isPrint=function(value){if(value==null||value==='')return false;try{return /\/questoes\/cadernos\/\d+\/imprimir(?:\/|$)/i.test(new URL(String(value),location.href).pathname);}catch(_){return /\/questoes\/cadernos\/\d+\/imprimir/i.test(String(value));}};var defer=function(image){if(!image||!image.getAttribute||!image.setAttribute||image.getAttribute('data-tec-image-deferred')==='1')return;var source=image.getAttribute('data-tec-original-src')||image.getAttribute('src')||image.getAttribute('data-src')||'';var sourceSet=image.getAttribute('data-tec-original-srcset')||image.getAttribute('srcset')||'';if(!source&&!sourceSet)return;if(source&&source!==placeholder)image.setAttribute('data-tec-original-src',source);if(sourceSet){image.setAttribute('data-tec-original-srcset',sourceSet);image.removeAttribute&&image.removeAttribute('srcset');}image.setAttribute('loading','lazy');image.setAttribute('decoding','async');if(source&&source!==placeholder)image.setAttribute('src',placeholder);image.setAttribute('data-tec-image-deferred','1');};var scan=function(node){if(!node)return;if(String(node.tagName||'').toUpperCase()==='IMG')defer(node);if(node.querySelectorAll)Array.prototype.forEach.call(node.querySelectorAll('img'),defer);};scan(document);var Observer=window.MutationObserver;if(typeof Observer==='function'&&!window.__tecConcursosImageObserver){try{var observer=new Observer(function(mutations){mutations.forEach(function(mutation){Array.prototype.forEach.call(mutation.addedNodes||[],scan);});});observer.observe(document.documentElement||document,{childList:true,subtree:true});window.__tecConcursosImageObserver=observer;}catch(_){}}var imageProto=window.HTMLImageElement&&window.HTMLImageElement.prototype;var srcDescriptor=imageProto&&Object.getOwnPropertyDescriptor(imageProto,'src');if(srcDescriptor&&srcDescriptor.set){try{Object.defineProperty(imageProto,'src',{configurable:srcDescriptor.configurable,enumerable:srcDescriptor.enumerable,get:srcDescriptor.get,set:function(value){var source=String(value==null?'':value);if(source&&source!==placeholder){this.setAttribute('data-tec-original-src',source);this.setAttribute('loading','lazy');this.setAttribute('decoding','async');this.setAttribute('data-tec-image-deferred','1');return srcDescriptor.set.call(this,placeholder);}return srcDescriptor.set.call(this,value);}});}catch(_){}}var blocked=function(){return undefined;};try{Object.defineProperty(window,'print',{configurable:false,enumerable:true,get:function(){return blocked;},set:function(){}});}catch(_){try{window.print=blocked;}catch(__){}}var originalOpen=window.open;if(typeof originalOpen==='function'){try{Object.defineProperty(window,'open',{configurable:true,writable:true,value:function(url){if(isPrint(url))return null;return originalOpen.apply(this,arguments);}});}catch(_){}}var proto=window.HTMLFormElement&&window.HTMLFormElement.prototype;['submit','requestSubmit'].forEach(function(name){if(!proto||typeof proto[name]!=='function')return;var original=proto[name];try{Object.defineProperty(proto,name,{configurable:true,writable:true,value:function(){var action=this.getAttribute&&this.getAttribute('action')||this.action||'';if(isPrint(action))return undefined;return original.apply(this,arguments);}});}catch(_){}});var cancel=function(event){var node=event&&event.target;var form=node&&(node.form||node);var action=form&&(form.getAttribute&&form.getAttribute('action')||form.action||'');var href=node&&(node.href||(node.getAttribute&&node.getAttribute('href')));if(isPrint(action)||isPrint(href)){event.preventDefault&&event.preventDefault();event.stopImmediatePropagation&&event.stopImmediatePropagation();event.stopPropagation&&event.stopPropagation();}};document.addEventListener('click',cancel,true);document.addEventListener('submit',cancel,true);try{Object.defineProperty(window,'__tecConcursosPrintGuard',{configurable:false,value:true});}catch(_){window.__tecConcursosPrintGuard=true;}})();`;
   }
 
   function installPageWorldBridge(documentNode, options) {
@@ -4492,6 +5023,7 @@
     if (config.enabled === false) return true;
     var pageWindow = config.pageWindow || (typeof unsafeWindow !== "undefined" ? unsafeWindow : rootNode);
     installPrintGuards(pageWindow, rootNode && rootNode.document);
+    installImageGuard(pageWindow, rootNode && rootNode.document);
     var addElement = config.addElement;
     if (typeof addElement !== "function") {
       try { addElement = typeof GM_addElement === "function" ? GM_addElement : null; } catch (_) { addElement = null; }
@@ -4505,6 +5037,9 @@
     installPrintBlock: installPrintBlock,
     installPrintGuards: installPrintGuards,
     installPageWorldBridge: installPageWorldBridge,
+    installImageGuard: installImageGuard,
+    deferImageLoading: deferImageLoading,
+    IMAGE_PLACEHOLDER: IMAGE_PLACEHOLDER,
     isPrintRoute: isPrintRoute,
     suppressNativePrintOnOutputPage: suppressNativePrintOnOutputPage
   };
@@ -4724,6 +5259,7 @@
         var libraryUi = modules.libraryUi.createPanel(documentNode, {
       aiContextText: modules.aiContext && modules.aiContext.getText ? modules.aiContext.getText() : "",
       getPlan: automation.readPlan,
+      getState: automation.getState,
       getStatus: automation.status,
       getProgress: automation.getProgress,
       defaultFolderId: automation.defaultFolderId,
@@ -4734,12 +5270,18 @@
         automation.savePlan(plan);
         return plan.matters.length + " matéria(s) salva(s) no plano.";
       },
-          onCreate: function (folderId) {
-            if (root.confirm && !root.confirm("Criar cadernos e iniciar a exportação do plano? O processo poderá ser pausado e retomado.")) return "Operação cancelada.";
-            var result = automation.startCreation(folderId);
-            refreshMenu();
-            return result;
-          },
+           onCreate: function (folderId) {
+             if (root.confirm && !root.confirm("Criar cadernos e iniciar a exportação do plano? O processo poderá ser pausado e retomado.")) return "Operação cancelada.";
+             var result = automation.startCreation(folderId);
+             refreshMenu();
+             return result;
+           },
+           onRestart: function (folderId) {
+             if (root.confirm && !root.confirm("Reiniciar a busca de materiais? O plano salvo será procurado na pasta e cadernos existentes serão reutilizados.")) return "Operação cancelada.";
+             var result = automation.restartMaterialSearch(folderId);
+             refreshMenu();
+             return result;
+           },
           onCurrent: function () {
             if (root.confirm && !root.confirm("Exportar este caderno para a biblioteca local?")) return "Operação cancelada.";
             var result = automation.startCurrentCaderno();
@@ -4747,7 +5289,7 @@
             return result;
           },
           onPause: function () {
-            var result = automation.pause();
+            var result = automation.pause("library-panel");
             refreshMenu();
             return result;
           },
@@ -4798,7 +5340,7 @@
             root: root,
             getState: automation.getState,
             onPause: function () {
-              var result = automation.pause();
+              var result = automation.pause("tampermonkey-menu");
               refreshMenu();
               return result;
             },
@@ -4828,7 +5370,7 @@
               var state = automation.getState();
               var message = "Nenhuma automação estava em execução.";
               if (state.running && (state.creation || state.export)) {
-                message = automation.pause();
+                message = automation.pause("escape");
                 stopped = true;
               }
               refreshMenu();

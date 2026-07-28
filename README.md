@@ -15,7 +15,9 @@ Na página de um caderno, o painel original permite iniciar, pausar, exportar TX
 
 ## Biblioteca e exportação de cadernos
 
-O botão **Biblioteca TC** abre a automação de cadernos. Selecione ou cole o conteúdo do arquivo consolidado de matérias (Markdown com linhas `MAT-xxx — título` e `TecConcursos: ID — caminho`) e informe a pasta de destino do TecConcursos. O script cria um caderno por MAT, aplica as bancas, anos, exclusões de anuladas/desatualizadas e exporta em partes de até 200 questões.
+O botão **Biblioteca TC** aparece em qualquer página do domínio TecConcursos e abre a automação de cadernos. Selecione ou cole o conteúdo do arquivo consolidado de matérias (Markdown com linhas `MAT-xxx — título` e `TecConcursos: ID — caminho`) e informe a pasta de destino do TecConcursos. O script cria um caderno por MAT, aplica as bancas, anos, exclusões de anuladas/desatualizadas e exporta em partes de até 200 questões.
+
+O botão **Reiniciar busca de materiais** percorre a pasta informada antes de abrir os filtros. Para cada MAT, se já houver um caderno com o mesmo nome, o script entra nele e coleta suas questões; somente quando não encontra o caderno ele segue para a criação. A biblioteca local e o estado de execução continuam preservados para retomadas.
 
 Cada caderno consolidado fica na biblioteca local do userscript, agrupado pelo bloco do plano. Dela é possível baixar:
 

@@ -52,8 +52,22 @@
     return "unknown";
   }
 
+  function hostnameOf(locationLike) {
+    if (!locationLike) return "";
+    if (typeof locationLike === "string") {
+      try { return String(new URL(locationLike, "https://www.tecconcursos.com.br").hostname || "").toLowerCase(); } catch (_) { return ""; }
+    }
+    if (locationLike.hostname) return String(locationLike.hostname).toLowerCase();
+    try { return String(new URL(locationLike.href || "", "https://www.tecconcursos.com.br").hostname || "").toLowerCase(); } catch (_) { return ""; }
+  }
+
+  function isTecConcursosPage(locationLike) {
+    var hostname = hostnameOf(locationLike);
+    return hostname === "tecconcursos.com.br" || hostname.endsWith(".tecconcursos.com.br");
+  }
+
   function isSupportedPage(locationLike) {
-    return getPageKind(locationLike) !== "unknown";
+    return getPageKind(locationLike) !== "unknown" || isTecConcursosPage(locationLike);
   }
 
   function isVisible(element) {
@@ -108,6 +122,7 @@
     PAGE_PATTERNS: PAGE_PATTERNS,
     QUESTION_ROOT_SELECTORS: QUESTION_ROOT_SELECTORS,
     getPageKind: getPageKind,
+    isTecConcursosPage: isTecConcursosPage,
     isSupportedPage: isSupportedPage,
     isVisible: isVisible,
     findQuestionRoot: findQuestionRoot,

@@ -10,6 +10,12 @@ test("reconhece a rota de caderno e a rota de filtros", () => {
   assert.equal(selectors.getPageKind({ pathname: "/questoes/busca" }), "unknown");
 });
 
+test("considera qualquer rota do domínio TecConcursos como página suportada para a Biblioteca TC", () => {
+  assert.equal(selectors.isSupportedPage({ hostname: "www.tecconcursos.com.br", pathname: "/financeiro" }), true);
+  assert.equal(selectors.isSupportedPage({ hostname: "tecconcursos.com.br", pathname: "/" }), true);
+  assert.equal(selectors.isSupportedPage({ hostname: "example.com", pathname: "/financeiro" }), false);
+});
+
 test("encontra o botão visível de próxima questão pelo contrato observado", () => {
   let clicks = 0;
   const button = {

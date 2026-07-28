@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const automation = require("../../src/userscript/automation.cjs");
+const lockModule = require("../../src/userscript/automation-lock.cjs");
 
 function storageStub(initial) {
   const values = new Map(Object.entries(initial || {}));
@@ -12,15 +13,31 @@ function storageStub(initial) {
   };
 }
 
-function rootStub(ownerId, href) {
+function rootStub(ownerId, href, BroadcastChannelCtor) {
   const location = new URL(href || "https://www.tecconcursos.com.br/");
   const values = new Map([[automation.OWNER_SESSION_KEY, ownerId || "tab-lifecycle"]]);
   return {
     location: { href: location.href, pathname: location.pathname },
+    BroadcastChannel: BroadcastChannelCtor,
     sessionStorage: {
       getItem(key) { return values.has(key) ? values.get(key) : null; },
       setItem(key, value) { values.set(key, String(value)); }
     }
+  };
+}
+
+function broadcastChannelCtor() {
+  const channels = new Set();
+  return class FakeBroadcastChannel {
+    constructor(name) { this.name = name; this.listeners = new Set(); channels.add(this); }
+    addEventListener(type, listener) { if (type === "message") this.listeners.add(listener); }
+    postMessage(data) {
+      for (const peer of channels) {
+        if (peer === this || peer.name !== this.name) continue;
+        setTimeout(() => peer.listeners.forEach(listener => listener({ data })), 0);
+      }
+    }
+    close() { channels.delete(this); this.listeners.clear(); }
   };
 }
 
@@ -143,6 +160,45 @@ test("não transforma a pausa em erro quando o guard interrompe o passo", async 
   assert.equal(storage.values.get(automation.STATE_KEY).progress.phase, "paused");
 });
 
+test("pausa a execução depois de um minuto sem a página ativa", async () => {
+  const storage = storageStub({ [automation.STATE_KEY]: pendingState("run-inactivity") });
+  const instance = automation.createAutomation({ root: rootStub(), document: documentStub(), storage, library: {} });
+
+  await instance.resume();
+  const message = instance.pauseForInactivity();
+  const saved = storage.values.get(automation.STATE_KEY);
+
+  assert.match(message, /inatividade/i);
+  assert.equal(saved.running, false);
+  assert.equal(saved.progress.phase, "paused");
+  assert.match(saved.progress.message, /1 minuto/i);
+  assert.equal(storage.values.has(automation.LOCK_KEY), false);
+});
+
+test("não retoma automaticamente quando o lease expirou após o fechamento da aba", async () => {
+  const storage = storageStub({
+    [automation.STATE_KEY]: {
+      ...pendingState("run-closed-tab"),
+      ownerId: "tab-closed",
+      progress: { phase: "opening-caderno", message: "Execução anterior" }
+    },
+    [automation.LOCK_KEY]: {
+      ownerId: "tab-closed",
+      runId: "run-closed-tab",
+      expiresAt: Date.now() - 60001
+    }
+  });
+  const root = rootStub("tab-closed", "https://www.tecconcursos.com.br/questoes/pastas/6423024");
+  const instance = automation.createAutomation({ root, document: documentStub(), storage, library: {} });
+
+  const message = await instance.resumeOnPageLoad();
+  const saved = storage.values.get(automation.STATE_KEY);
+
+  assert.match(message, /retomar/i);
+  assert.equal(saved.running, false);
+  assert.equal(saved.progress.phase, "paused");
+});
+
 test("não retoma automaticamente uma execução antiga ao reabrir o site", async () => {
   const href = "https://www.tecconcursos.com.br/questoes/pastas/6423024";
   const storage = storageStub({
@@ -172,6 +228,26 @@ test("não retoma automaticamente uma execução antiga ao reabrir o site", asyn
   assert.equal(saved.running, false);
   assert.equal(saved.progress.phase, "paused");
   assert.equal(root.location.href, href);
+});
+
+test("encaminha o Parar do Tampermonkey e pausa a aba proprietária", async () => {
+  const BroadcastChannelCtor = broadcastChannelCtor();
+  const storage = storageStub({
+    [automation.STATE_KEY]: Object.assign(pendingState("run-menu-forward"), { ownerId: "tab-owner" }),
+    [automation.LOCK_KEY]: { ownerId: "tab-owner", runId: "run-menu-forward", expiresAt: Date.now() + lockModule.LOCK_LEASE_MS }
+  });
+  const owner = automation.createAutomation({ root: rootStub("tab-owner", undefined, BroadcastChannelCtor), document: documentStub(), storage, library: {} });
+  const requester = automation.createAutomation({ root: rootStub("tab-requester", undefined, BroadcastChannelCtor), document: documentStub(), storage, library: {} });
+
+  const message = requester.pause("tampermonkey-menu");
+  await new Promise(resolve => setTimeout(resolve, 15));
+  const saved = storage.values.get(automation.STATE_KEY);
+
+  assert.match(message, /solicitada/i);
+  assert.equal(saved.running, false);
+  assert.equal(saved.progress.phase, "paused");
+  assert.equal(storage.values.has(automation.LOCK_KEY), false);
+  void owner;
 });
 
 test("retoma a exportação a partir da página de pastas e reabre o caderno salvo", async () => {

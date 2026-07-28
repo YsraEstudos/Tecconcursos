@@ -27,6 +27,15 @@
     return ranges;
   }
 
+  function recommendedMaxPerPrint(metrics, fallback) {
+    var limit = Math.max(1, Math.floor(Number(fallback) || 200));
+    var imageCount = Math.max(0, Math.floor(Number(metrics && metrics.imageCount) || 0));
+    var contentHtmlLength = Math.max(0, Math.floor(Number(metrics && metrics.contentHtmlLength) || 0));
+    if (imageCount >= 40 || contentHtmlLength >= 1500000) return Math.min(limit, 50);
+    if (imageCount >= 12 || contentHtmlLength >= 600000) return Math.min(limit, 100);
+    return limit;
+  }
+
   function clickPrintTab(documentNode) {
     var target = Array.from(documentNode.querySelectorAll("div[role='button']")).filter(isVisible).find(function (node) {
       return sameText(node.innerText || node.textContent, "Imprimir") && /onSelecionarAba|mostrarAlertaExclusivoParaAssinantes/.test(node.getAttribute("ng-click") || "");
@@ -70,7 +79,8 @@
       var total = Number(initialInput.getAttribute("max") || initialInput.max || 0);
       if (!job.ranges.length) {
         if (!total) throw new Error("O TecConcursos não informou a quantidade total de questões para imprimir.");
-        job.ranges = splitRanges(total, maxPerPrint);
+        job.maxPerPrint = Math.max(1, Math.floor(Number(job.maxPerPrint) || maxPerPrint));
+        job.ranges = splitRanges(total, job.maxPerPrint);
         job.rangeIndex = 0;
       }
       if (!job.printTotalQuestions) job.printTotalQuestions = total;
@@ -121,6 +131,7 @@
 
   return {
     splitRanges: splitRanges,
+    recommendedMaxPerPrint: recommendedMaxPerPrint,
     clickPrintTab: clickPrintTab,
     preparePrintForm: preparePrintForm,
     createPrintWorkflow: createPrintWorkflow

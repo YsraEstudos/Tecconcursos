@@ -186,3 +186,33 @@ test("duas reivindicações simultâneas elegem uma única aba vencedora", async
   first.destroy();
   second.destroy();
 });
+
+test("encaminha uma solicitação de pausa para a aba proprietária", async () => {
+  const BroadcastChannelCtor = broadcastChannelCtor();
+  const storage = storageStub();
+  const ownerState = { runId: "run-pause-request", running: true };
+  const requesterState = { runId: "run-pause-request", running: true };
+  let received = null;
+  const owner = lockModule.createLockManager({
+    root: rootWithOwner("tab-owner", BroadcastChannelCtor),
+    storage,
+    readState: () => ownerState,
+    onPauseRequest: request => { received = request; }
+  });
+  const requester = lockModule.createLockManager({
+    root: rootWithOwner("tab-requester", BroadcastChannelCtor),
+    storage,
+    readState: () => requesterState
+  });
+
+  owner.acquireLease(ownerState, false);
+
+  assert.equal(requester.requestPause(requesterState, "tampermonkey-menu"), true);
+  await new Promise(resolve => setTimeout(resolve, 10));
+
+  assert.equal(received.targetOwnerId, "tab-owner");
+  assert.equal(received.runId, "run-pause-request");
+  assert.equal(received.sourceLabel, "tampermonkey-menu");
+  owner.destroy();
+  requester.destroy();
+});

@@ -96,6 +96,7 @@
         var libraryUi = modules.libraryUi.createPanel(documentNode, {
       aiContextText: modules.aiContext && modules.aiContext.getText ? modules.aiContext.getText() : "",
       getPlan: automation.readPlan,
+      getState: automation.getState,
       getStatus: automation.status,
       getProgress: automation.getProgress,
       defaultFolderId: automation.defaultFolderId,
@@ -106,12 +107,18 @@
         automation.savePlan(plan);
         return plan.matters.length + " matéria(s) salva(s) no plano.";
       },
-          onCreate: function (folderId) {
-            if (root.confirm && !root.confirm("Criar cadernos e iniciar a exportação do plano? O processo poderá ser pausado e retomado.")) return "Operação cancelada.";
-            var result = automation.startCreation(folderId);
-            refreshMenu();
-            return result;
-          },
+           onCreate: function (folderId) {
+             if (root.confirm && !root.confirm("Criar cadernos e iniciar a exportação do plano? O processo poderá ser pausado e retomado.")) return "Operação cancelada.";
+             var result = automation.startCreation(folderId);
+             refreshMenu();
+             return result;
+           },
+           onRestart: function (folderId) {
+             if (root.confirm && !root.confirm("Reiniciar a busca de materiais? O plano salvo será procurado na pasta e cadernos existentes serão reutilizados.")) return "Operação cancelada.";
+             var result = automation.restartMaterialSearch(folderId);
+             refreshMenu();
+             return result;
+           },
           onCurrent: function () {
             if (root.confirm && !root.confirm("Exportar este caderno para a biblioteca local?")) return "Operação cancelada.";
             var result = automation.startCurrentCaderno();
@@ -119,7 +126,7 @@
             return result;
           },
           onPause: function () {
-            var result = automation.pause();
+            var result = automation.pause("library-panel");
             refreshMenu();
             return result;
           },
@@ -170,7 +177,7 @@
             root: root,
             getState: automation.getState,
             onPause: function () {
-              var result = automation.pause();
+              var result = automation.pause("tampermonkey-menu");
               refreshMenu();
               return result;
             },
@@ -200,7 +207,7 @@
               var state = automation.getState();
               var message = "Nenhuma automação estava em execução.";
               if (state.running && (state.creation || state.export)) {
-                message = automation.pause();
+                message = automation.pause("escape");
                 stopped = true;
               }
               refreshMenu();

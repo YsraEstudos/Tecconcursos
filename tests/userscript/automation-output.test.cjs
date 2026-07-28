@@ -105,3 +105,56 @@ test("não avança para a próxima parte quando a pausa ocorre antes da navegaç
   assert.equal(root.location.href, initialHref);
   assert.equal(state.export.job.rangeIndex, 0);
 });
+
+test("usa a extração cooperativa para permitir pausa durante a leitura da saída", async () => {
+  const state = {
+    running: true,
+    export: {
+      job: {
+        libraryId: "caderno-cooperativo",
+        cadernoId: "caderno-cooperativo",
+        title: "Caderno cooperativo",
+        code: "MAT-001",
+        group: "Português",
+        ranges: [{ start: 1, count: 1 }],
+        rangeIndex: 0
+      }
+    }
+  };
+  let extractionStarted;
+  let releaseExtraction;
+  const started = new Promise(resolve => { extractionStarted = resolve; });
+  const extraction = new Promise(resolve => { releaseExtraction = resolve; });
+  const workflow = output.createOutputWorkflow({
+    root: { location: { href: "https://www.tecconcursos.com.br/questoes/cadernos/caderno-cooperativo/imprimir" } },
+    document: { querySelectorAll() { return [{ innerText: "1) Questão" }]; }, querySelector() { return null; } },
+    outputWaitTimeoutMs: 1000,
+    library: { appendPart() { return { id: "caderno-cooperativo", title: "Caderno cooperativo" }; } },
+    extractPrintedQuestionsAsync(documentNode, options) {
+      extractionStarted();
+      return extraction.then(() => {
+        options.ensureRunning();
+        return [{ id: "q1" }];
+      });
+    },
+    persistProgress() {},
+    recordEvent() {},
+    writeState() {},
+    waitFor() { return Promise.resolve(); },
+    pageDiagnosticSnapshot() { return {}; },
+    clean(value) { return String(value || ""); },
+    ensureRunning(currentState) {
+      if (!state.running) throw Object.assign(new Error("pausada"), { code: "AUTOMATION_PAUSED" });
+      assert.equal(currentState, state);
+    },
+    lockManager: { releaseLease() {} }
+  });
+
+  const promise = workflow.finishExportPart(state);
+  await started;
+  state.running = false;
+  releaseExtraction();
+
+  await assert.rejects(promise, error => error.code === "AUTOMATION_PAUSED");
+  assert.equal(state.export.job.rangeIndex, 0);
+});

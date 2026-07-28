@@ -9,6 +9,7 @@ const projectRoot = path.resolve(__dirname, "../..");
 const bundle = fs.readFileSync(path.join(projectRoot, "tecconcursos-scraper.user.js"), "utf8");
 const stateKey = "tecconcursos_caderno_automation_v1";
 const libraryKey = "tecconcursos_export_library_v1";
+const planKey = "tecconcursos_caderno_plan_v1";
 
 function cadernoIdFor(total) {
   return String(9000000 + Number(total));
@@ -56,6 +57,13 @@ function cadernoPage(id, metadata) {
         window.location.href = "/questoes/cadernos/${id}/imprimir?start=" + encodeURIComponent(start) + "&count=" + encodeURIComponent(count);
       });
     </script>
+  </body></html>`;
+}
+
+function folderPage(id, cadernos) {
+  const items = (cadernos || []).map(item => `<li><div class="listagem-corpo-item"><div class="list-item-caderno"><span class="nome"><a href="/questoes/cadernos/${item.id}">${item.title}</a></span></div></div></li>`).join("");
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Pasta E2E</title><script src="/bundle.js"></script></head><body>
+    <ul class="listagem-corpo"><input type="hidden" name="pastaAtualId" value="${id}">${items}</ul>
   </body></html>`;
 }
 
@@ -141,8 +149,11 @@ function outputPage(id, start, count, options) {
         window.TecConcursosModules.library.extractPrintedQuestions = function () {
           throw new Error("Falha E2E simulada na extração da parte iniciada em ${Number(start)}.");
         };
+        window.TecConcursosModules.library.extractPrintedQuestionsAsync = function () {
+          throw new Error("Falha E2E simulada na extração da parte iniciada em ${Number(start)}.");
+        };
       </script>`
-    : "";
+      : "";
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Imprimir Caderno</title><script src="/bundle.js"></script></head><body>
     <h1>Caderno E2E - saída de impressão</h1><div id="prova-conteudo"></div>
     ${failureScript}
@@ -166,7 +177,7 @@ function outputPage(id, start, count, options) {
         }
         setTimeout(appendQuestion, 5);
       }
-      setTimeout(appendQuestion, 35);
+       setTimeout(appendQuestion, 35);
     </script>
   </body></html>`;
 }
@@ -176,12 +187,19 @@ function startFixtureServer(options) {
   const failedStarts = new Set();
   const failedParts = new Set();
   const multiById = new Map((config.multiMatters || []).map(matter => [String(matter.id), matter]));
+  const folderById = new Map(Object.entries(config.folderCadernos || {}));
   const stats = { printRequests: [], creationRequests: [] };
   const server = http.createServer((request, response) => {
     const parsed = new URL(request.url, "http://127.0.0.1");
     if (parsed.pathname === "/bundle.js") {
       response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
       response.end(bundle);
+      return;
+    }
+    const folderMatch = parsed.pathname.match(/^\/questoes\/pastas\/(\d+)$/);
+    if (folderMatch) {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      response.end(folderPage(folderMatch[1], folderById.get(folderMatch[1]) || []));
       return;
     }
     const match = parsed.pathname.match(/^\/questoes\/cadernos\/(\d+)(\/imprimir)?$/);
@@ -305,6 +323,104 @@ test("mantém a página ociosa sem polling frequente quando a automação está 
     const p95 = values => values.slice().sort((left, right) => left - right)[Math.floor((values.length - 1) * 0.95)];
     assert.ok(p95(metrics.clickToPaintMs) < 50, `P95 de abertura/fechamento: ${JSON.stringify(metrics)}`);
     assert.ok(p95(metrics.tabSwitchToPaintMs) < 50, `P95 de troca de aba: ${JSON.stringify(metrics)}`);
+  } finally {
+    await context.close();
+    await browser.close();
+    await new Promise(resolve => fixture.server.close(resolve));
+  }
+});
+
+test("pausa pela Biblioteca TC compacta e libera o lock", { timeout: 120000 }, async () => {
+  const fixture = await startFixtureServer();
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const id = cadernoIdFor(1);
+  const activeState = {
+    version: 1,
+    runId: "e2e-launcher-pause",
+    ownerId: null,
+    running: true,
+    creation: { index: 0, phase: "prepare", plan: { matters: [{}] } },
+    export: null,
+    progress: { phase: "starting", message: "Pausa pelo launcher iniciada." }
+  };
+  const page = await context.newPage();
+  try {
+    await page.goto(`${fixture.origin}/questoes/cadernos/${id}`, { waitUntil: "domcontentloaded" });
+    await page.locator("#tec-library-pause").waitFor();
+    await page.evaluate(({ stateKey, activeState }) => {
+      localStorage.setItem(stateKey, JSON.stringify(activeState));
+      window.dispatchEvent(new StorageEvent("storage", { key: stateKey, newValue: JSON.stringify(activeState) }));
+    }, { stateKey, activeState });
+    await page.waitForFunction(() => document.getElementById("tec-library-pause").disabled === false, null, { timeout: 10000 });
+    await page.locator("#tec-library-pause").click();
+    await page.waitForFunction(({ stateKey }) => {
+      const state = JSON.parse(localStorage.getItem(stateKey) || "{}");
+      return state.running === false && state.progress && state.progress.phase === "paused";
+    }, { stateKey }, { timeout: 30000 });
+    const result = await page.evaluate(({ stateKey }) => ({
+      state: JSON.parse(localStorage.getItem(stateKey) || "{}"),
+      lock: localStorage.getItem("tecconcursos_caderno_automation_lock_v1"),
+      buttonDisabled: document.getElementById("tec-library-pause").disabled
+    }), { stateKey });
+    assert.equal(result.state.running, false);
+    assert.equal(result.state.progress.phase, "paused");
+    assert.equal(result.lock, null);
+    assert.equal(result.buttonDisabled, true);
+  } finally {
+    await context.close();
+    await browser.close();
+    await new Promise(resolve => fixture.server.close(resolve));
+  }
+});
+
+test("reinicia a busca na pasta e reutiliza o caderno existente pelo nome", { timeout: 120000 }, async () => {
+  const fixture = await startFixtureServer({
+    folderCadernos: {
+      "42": [{ id: "9000001", title: "Coesão textual - Base FCC", count: 1 }]
+    }
+  });
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  page.on("dialog", dialog => dialog.accept());
+  await context.addInitScript(({ planKey, stateKey, libraryKey }) => {
+    if (sessionStorage.getItem("tec-e2e-reuse-initialized")) return;
+    sessionStorage.setItem("tec-e2e-reuse-initialized", "1");
+    localStorage.setItem(planKey, JSON.stringify({
+      matters: [{ code: "MAT-001", title: "Coesão textual - Base FCC", group: "Português" }],
+      banks: [],
+      years: [],
+      removeCancelled: false,
+      removeOutdated: false
+    }));
+    localStorage.removeItem(stateKey);
+    localStorage.removeItem(libraryKey);
+    localStorage.removeItem("tecconcursos_caderno_automation_lock_v1");
+  }, { planKey, stateKey, libraryKey });
+  try {
+    await page.goto(`${fixture.origin}/questoes/pastas/42`, { waitUntil: "domcontentloaded" });
+    assert.equal(await page.locator("a[href*='/questoes/cadernos/']").count(), 1);
+    assert.equal(await page.locator("a[href*='/questoes/cadernos/']").innerText(), "Coesão textual - Base FCC");
+    assert.equal(await page.evaluate(() => Boolean(window.TecConcursosModules.automationFilters.findCadernoLinkByTitle(document, "Coesão textual - Base FCC"))), true);
+    await page.locator("#tec-library-launcher").click();
+    await page.locator("[data-action='restart']").click();
+    await page.waitForFunction(({ libraryKey, stateKey }) => {
+      const library = JSON.parse(localStorage.getItem(libraryKey) || "{}");
+      const state = JSON.parse(localStorage.getItem(stateKey) || "{}");
+      return library.entries && library.entries["9000001"] && library.entries["9000001"].questions.length === 1 && state.running === false && state.creation === null && state.progress && state.progress.phase === "completed";
+    }, { libraryKey, stateKey }, { timeout: 60000 });
+    const result = await page.evaluate(({ libraryKey }) => ({
+      library: JSON.parse(localStorage.getItem(libraryKey) || "{}"),
+      state: JSON.parse(localStorage.getItem("tecconcursos_caderno_automation_v1") || "{}"),
+      href: location.href
+    }), { libraryKey });
+    assert.equal(result.library.entries["9000001"].title, "Coesão textual - Base FCC");
+    assert.equal(fixture.stats.creationRequests.length, 0);
+    assert.match(result.href, /\/questoes\/pastas\/42$/);
+    assert.equal(result.state.running, false);
+    assert.equal(result.state.creation, null);
+    assert.equal(result.state.progress.phase, "completed");
   } finally {
     await context.close();
     await browser.close();

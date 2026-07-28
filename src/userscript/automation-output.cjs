@@ -16,6 +16,34 @@
     var outputWaitTimeoutMs = context.outputWaitTimeoutMs || 60000;
     var library = context.library;
     var extractPrintedQuestions = context.extractPrintedQuestions || deps.library.extractPrintedQuestions;
+    var extractPrintedQuestionsAsync = context.extractPrintedQuestionsAsync || deps.library.extractPrintedQuestionsAsync;
+
+    function measureOutputPage() {
+      var images = documentNode && typeof documentNode.querySelectorAll === "function" ? documentNode.querySelectorAll("#prova-conteudo img, .questao img") : [];
+      var contentNode = documentNode && typeof documentNode.querySelector === "function" ? documentNode.querySelector("#prova-conteudo") : null;
+      return {
+        imageCount: images.length,
+        questionCount: documentNode && typeof documentNode.querySelectorAll === "function" ? documentNode.querySelectorAll(".questao").length : 0,
+        contentChildCount: contentNode && contentNode.children ? contentNode.children.length : 0
+      };
+    }
+
+    function adaptPendingRanges(job, current, metrics) {
+      var fallback = Number(job.maxPerPrint) || 200;
+      var recommend = typeof context.recommendedMaxPerPrint === "function" ? context.recommendedMaxPerPrint(metrics, fallback) : fallback;
+      job.maxPerPrint = Math.min(fallback, recommend);
+      if (job.maxPerPrint >= fallback) return false;
+      var total = Number(job.printTotalQuestions) || job.ranges.reduce(function (sum, range) { return sum + (Number(range.count) || 0); }, 0);
+      var completed = job.ranges.slice(0, job.rangeIndex);
+      var nextStart = Number(current.start) + Number(current.count);
+      var tail = [];
+      for (var start = nextStart; start <= total; start += job.maxPerPrint) {
+        tail.push({ start: start, count: Math.min(job.maxPerPrint, total - start + 1) });
+      }
+      job.ranges = completed.concat(tail);
+      job.rangeIndex = completed.length;
+      return true;
+    }
 
     function ensureRunning(state) {
       if (typeof context.ensureRunning === "function") context.ensureRunning(state);
@@ -89,14 +117,20 @@
       });
       await waitForPrintedQuestions(state);
       ensureRunning(state);
-      var questions = extractPrintedQuestions(documentNode);
+      var outputMetrics = measureOutputPage();
+      var questions = typeof extractPrintedQuestionsAsync === "function"
+        ? await extractPrintedQuestionsAsync(documentNode, {
+          chunkSize: context.extractionChunkSize || 5,
+          ensureRunning: function () { ensureRunning(state); }
+        })
+        : extractPrintedQuestions(documentNode);
       if (!questions.length) {
         context.recordEvent(state, "extraction-empty", { page: context.pageDiagnosticSnapshot(rootNode, documentNode), expected: current && current.count });
         context.writeState(state);
         throw new Error("A página de impressão montou o DOM, mas nenhuma questão pôde ser extraída.");
       }
       ensureRunning(state);
-      context.recordEvent(state, "questions-extracted", { extracted: questions.length, expected: current && current.count, page: context.pageDiagnosticSnapshot(rootNode, documentNode) });
+      context.recordEvent(state, "questions-extracted", { extracted: questions.length, expected: current && current.count, outputMetrics: outputMetrics, page: context.pageDiagnosticSnapshot(rootNode, documentNode) });
       context.writeState(state);
       var titleNode = documentNode.querySelector("h1");
       var entry = library.appendPart(Object.assign({}, job, {
@@ -107,6 +141,7 @@
         printTotalQuestions: Number(job.printTotalQuestions) || 0
       }), questions);
       job.rangeIndex += 1;
+      adaptPendingRanges(job, current, outputMetrics);
       if (job.rangeIndex < job.ranges.length) {
         ensureRunning(state);
         context.persistProgress(state, {
@@ -138,7 +173,7 @@
           lastSavedQuestions: questions.length
         });
         ensureRunning(state);
-        rootNode.location.href = state.creation.filterUrl;
+        rootNode.location.href = state.creation.folderUrl || state.creation.filterUrl;
         return "Caderno " + entry.title + " consolidado na biblioteca. Preparando o próximo.";
       }
       state.running = false;

@@ -143,3 +143,25 @@ test("instala a ponte page-world uma única vez por documento", () => {
 
   assert.equal(bridgeCalls, 1);
 });
+
+test("guarda a URL da imagem e troca o bitmap por um placeholder durante a exportação", () => {
+  const attributes = new Map([
+    ["src", "/questoes/imagens/enunciado.png"],
+    ["srcset", "/questoes/imagens/enunciado.png 1x"],
+  ]);
+  const image = {
+    getAttribute(name) { return attributes.get(name) || null; },
+    setAttribute(name, value) { attributes.set(name, String(value)); },
+    removeAttribute(name) { attributes.delete(name); },
+  };
+  const root = { location: { href: "https://www.tecconcursos.com.br/questoes/cadernos/99288375/imprimir" } };
+
+  assert.equal(blocker.deferImageLoading(image, root), true);
+  assert.equal(attributes.get("data-tec-original-src"), "https://www.tecconcursos.com.br/questoes/imagens/enunciado.png");
+  assert.equal(attributes.get("data-tec-original-srcset"), "/questoes/imagens/enunciado.png 1x");
+  assert.equal(attributes.get("src"), blocker.IMAGE_PLACEHOLDER);
+  assert.equal(attributes.has("srcset"), false);
+  assert.equal(attributes.get("loading"), "lazy");
+  assert.equal(attributes.get("decoding"), "async");
+  assert.equal(blocker.deferImageLoading(image, root), false);
+});

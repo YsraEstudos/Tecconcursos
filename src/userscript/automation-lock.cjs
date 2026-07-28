@@ -11,6 +11,7 @@
   var LOCK_KEY = "tecconcursos_caderno_automation_lock_v1";
   var OWNER_SESSION_KEY = "tecconcursos_caderno_automation_owner_v1";
   var SYNC_CHANNEL_NAME = "tecconcursos_caderno_automation_sync_v1";
+  var COMMAND_KEY = "tecconcursos_caderno_automation_command_v1";
   var LOCK_LEASE_MS = 30000;
   var LOCK_HEARTBEAT_MS = 5000;
 
@@ -83,6 +84,8 @@
     var channel = null;
     var remoteConflict = null;
     var localClaim = null;
+    var handledCommandIds = [];
+    var onPauseRequest = typeof config.onPauseRequest === "function" ? config.onPauseRequest : null;
 
     function broadcast(message) {
       if (!channel || typeof channel.postMessage !== "function") return;
@@ -143,18 +146,43 @@
       stopHeartbeat();
     }
 
+    function commandId(message) {
+      return String(message && (message.requestId || message.sentAt) || "");
+    }
+
+    function handlePauseRequest(message) {
+      if (!message || message.type !== "pause-request") return;
+      if (message.source === ownerId || message.targetOwnerId && message.targetOwnerId !== ownerId) return;
+      var id = commandId(message);
+      if (id && handledCommandIds.indexOf(id) >= 0) return;
+      if (id) {
+        handledCommandIds.push(id);
+        if (handledCommandIds.length > 20) handledCommandIds.shift();
+      }
+      if (onPauseRequest) {
+        try { onPauseRequest(message); } catch (_) {}
+      }
+    }
+
     function handleSyncMessage(event) {
       var message = event && event.data ? event.data : event;
       if (!message || message.source === ownerId) return;
       if (message.type === "lock-claim" || message.type === "lock-renew" || message.type === "lock-reassert") {
         reconcileRemoteLock(parseLock(message.lock));
+      } else if (message.type === "pause-request") {
+        handlePauseRequest(message);
       } else if (message.type === "lock-release" && remoteConflict && sameClaim(remoteConflict, parseLock(message.lock))) {
         remoteConflict = null;
       }
     }
 
     function handleStorageEvent(event) {
-      if (!event || event.key !== LOCK_KEY) return;
+      if (!event) return;
+      if (event.key === COMMAND_KEY) {
+        try { handlePauseRequest(parseLock(event.newValue)); } catch (_) {}
+        return;
+      }
+      if (event.key !== LOCK_KEY) return;
       if (!event.newValue) {
         remoteConflict = null;
         return;
@@ -280,6 +308,32 @@
       return true;
     }
 
+    function requestPause(state, source) {
+      var current = effectiveLock(readLock());
+      if (!current || !lockIsActive(current)) return false;
+      var request = {
+        version: 1,
+        type: "pause-request",
+        requestId: uniqueId("pause"),
+        source: ownerId,
+        targetOwnerId: current.ownerId,
+        runId: state && state.runId || current.runId || "",
+        sourceLabel: String(source || "manual"),
+        sentAt: Date.now()
+      };
+      broadcast(request);
+      var local = null;
+      try { local = rootNode && rootNode.localStorage; } catch (_) {}
+      if (local && typeof local.setItem === "function") {
+        try {
+          local.setItem(COMMAND_KEY, JSON.stringify(request));
+          var clear = rootNode && rootNode.setTimeout || (typeof setTimeout === "function" ? setTimeout : null);
+          if (clear) clear(function () { try { local.removeItem(COMMAND_KEY); } catch (_) {} }, 0);
+        } catch (_) {}
+      }
+      return true;
+    }
+
     function lockInfo(state) {
       var lock = effectiveLock(readLock());
       return {
@@ -309,6 +363,7 @@
       acquireLease: acquireLease,
       ensureLease: ensureLease,
       releaseLease: releaseLease,
+      requestPause: requestPause,
       lockInfo: lockInfo,
       stopHeartbeat: stopHeartbeat,
       destroy: function () { stopHeartbeat(); stopSynchronization(); }
@@ -317,6 +372,7 @@
 
   return {
     LOCK_KEY: LOCK_KEY,
+    COMMAND_KEY: COMMAND_KEY,
     OWNER_SESSION_KEY: OWNER_SESSION_KEY,
     SYNC_CHANNEL_NAME: SYNC_CHANNEL_NAME,
     LOCK_LEASE_MS: LOCK_LEASE_MS,

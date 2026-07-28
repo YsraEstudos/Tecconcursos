@@ -53,6 +53,7 @@
     style.textContent = "#tec-library-launcher{position:fixed;left:18px;bottom:18px;z-index:2147483646;border:0;border-radius:999px;background:#1d4ed8;color:#fff;padding:12px 16px;font:700 14px system-ui;box-shadow:0 8px 22px #1e3a8a66;cursor:pointer}#tec-library-panel{position:fixed;left:18px;bottom:18px;z-index:2147483647;width:min(460px,calc(100vw - 36px));max-height:min(720px,calc(100vh - 36px));display:none;flex-direction:column;overflow:hidden;border-radius:16px;background:#f8fafc;color:#172554;box-shadow:0 18px 55px #0f172a55;font:14px system-ui}#tec-library-panel.open{display:flex}#tec-library-panel .head{display:flex;align-items:center;gap:10px;padding:15px 16px;background:linear-gradient(135deg,#1d4ed8,#0f766e);color:#fff}#tec-library-panel .head strong{font-size:16px}#tec-library-panel .head button{margin-left:auto;border:0;background:#ffffff22;color:#fff;border-radius:8px;padding:6px 9px;cursor:pointer}#tec-library-panel .tabs{display:flex;gap:5px;padding:10px 12px;border-bottom:1px solid #dbeafe;background:#fff;overflow-x:auto}#tec-library-panel .tabs button{border:0;border-radius:7px;background:#eff6ff;color:#1e3a8a;padding:7px 10px;cursor:pointer;font-weight:700;white-space:nowrap}#tec-library-panel .tabs button.active{background:#1d4ed8;color:#fff}#tec-library-panel .body{overflow:auto;padding:14px 16px}#tec-library-panel label{display:block;margin:8px 0 4px;font-weight:700}#tec-library-panel textarea,#tec-library-panel input{width:100%;box-sizing:border-box;border:1px solid #bfdbfe;border-radius:8px;padding:8px;font:13px ui-monospace,Consolas,monospace}#tec-library-panel textarea{min-height:106px;resize:vertical}#tec-library-panel .actions{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}#tec-library-panel .actions button,#tec-library-panel .entry-actions button{border:0;border-radius:8px;background:#1d4ed8;color:#fff;padding:8px 10px;font-weight:700;cursor:pointer}#tec-library-panel .actions button.secondary,#tec-library-panel .entry-actions button.secondary{background:#475569}#tec-library-panel .actions button.danger,#tec-library-panel .entry-actions button.danger{background:#b91c1c}#tec-library-panel .status{min-height:36px;color:#0f766e;font-size:13px;line-height:1.35}#tec-library-panel .hint{padding:10px;border-radius:9px;background:#eff6ff;color:#1e3a8a;font-size:13px;line-height:1.4}#tec-library-panel details{margin:8px 0;border:1px solid #dbeafe;border-radius:9px;background:#fff}#tec-library-panel summary{cursor:pointer;padding:9px 10px;font-weight:700}#tec-library-panel .entry{padding:8px 10px;border-top:1px solid #eff6ff}#tec-library-panel .entry button.entry-open{border:0;background:transparent;color:#1d4ed8;padding:0;text-align:left;font:700 13px system-ui;cursor:pointer}#tec-library-panel .entry small{display:block;margin-top:3px;color:#64748b}#tec-library-panel .entry-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}#tec-library-panel .entry-actions button{font-size:12px;padding:6px 8px}#tec-library-panel .ai-context{margin:0;max-height:500px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid #dbeafe;border-radius:9px;background:#fff;color:#0f172a;padding:12px;font:12px/1.5 ui-monospace,Consolas,monospace}#tec-library-panel .ai-context-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin:10px 0}";
     documentNode.head.appendChild(style);
     style.textContent += "#tec-library-panel .completion-summary{margin:10px 0;border:1px solid #dbeafe;border-radius:9px;background:#fff;padding:10px}#tec-library-panel .completion-summary strong{display:block;margin-bottom:7px}#tec-library-panel .completion-summary ol{margin:0;padding-left:24px}#tec-library-panel .completion-summary li{padding:3px 0;color:#334155}#tec-library-panel .completion-summary li.completed{color:#047857}#tec-library-panel .completion-summary li.failed{color:#b91c1c}#tec-library-panel .completion-summary li.active{color:#1d4ed8}";
+    style.textContent += "#tec-library-launcher-wrap{position:fixed;left:18px;bottom:18px;z-index:2147483646;display:flex;align-items:stretch;gap:6px}#tec-library-launcher{position:static;left:auto;bottom:auto}#tec-library-pause{border:0;border-radius:999px;background:#b91c1c;color:#fff;padding:0 13px;font:700 13px system-ui;box-shadow:0 8px 22px #7f1d1d55;cursor:pointer;white-space:nowrap}#tec-library-pause:hover{background:#991b1b}#tec-library-pause:disabled{background:#94a3b8;box-shadow:none;cursor:not-allowed;opacity:.85}";
 
     var launcher = button(documentNode, "", "");
     launcher.id = "tec-library-launcher";
@@ -64,12 +65,20 @@
     launcherStatus.style.opacity = "0.92";
     launcher.appendChild(launcherLabel);
     launcher.appendChild(launcherStatus);
+    var launcherPause = button(documentNode, "⏹ Parar", "");
+    launcherPause.id = "tec-library-pause";
+    launcherPause.dataset.tecScraperVersion = "2.5.17";
+    launcherPause.setAttribute("aria-label", "Parar automação");
+    var launcherWrap = documentNode.createElement("div");
+    launcherWrap.id = "tec-library-launcher-wrap";
+    launcherWrap.appendChild(launcher);
+    launcherWrap.appendChild(launcherPause);
     var panel = documentNode.createElement("section");
     panel.id = "tec-library-panel";
-    panel.dataset.tecScraperVersion = "2.5.15";
-    launcher.dataset.tecScraperVersion = "2.5.15";
-    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.5.15</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
-    documentNode.body.appendChild(launcher);
+    panel.dataset.tecScraperVersion = "2.5.17";
+    launcher.dataset.tecScraperVersion = "2.5.17";
+    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.5.17</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
+    documentNode.body.appendChild(launcherWrap);
     documentNode.body.appendChild(panel);
     var body = panel.querySelector(".body");
     var activeTab = "automation";
@@ -173,6 +182,8 @@
       var label = progressLabel(progress);
       launcherStatus.textContent = label;
       launcher.title = progressDetails(progress);
+      launcherPause.disabled = !progress.running;
+      launcherPause.title = progress.running ? "Parar a automação agora. " + progressDetails(progress) : "A automação não está em execução.";
       var progressNode = body.querySelector("#tec-progress");
       if (progressNode) {
         progressNode.textContent = progressDetails(progress);
@@ -180,6 +191,16 @@
       }
       updateProgressTimer(progress);
       if (includeSummary !== false) renderCompletionSummary();
+    }
+
+    function handleLauncherPause() {
+      if (launcherPause.disabled) return;
+      try {
+        Promise.resolve(config.onPause && config.onPause("library-launcher")).then(function (message) {
+          setStatus(message || "Pausa solicitada.", false);
+          refreshProgress();
+        }).catch(handleAutomationError);
+      } catch (error) { handleAutomationError(error); }
     }
 
     function handleAutomationError(error) {
@@ -206,6 +227,12 @@
       folderInput.addEventListener("input", function () {
         if (config.onFolderIdChange) config.onFolderIdChange(folderInput.value);
       });
+      var createAction = body.querySelector("[data-action='create']");
+      if (createAction && createAction.parentNode) {
+        var restartAction = button(documentNode, "Reiniciar busca de materiais", "secondary");
+        restartAction.dataset.action = "restart";
+        createAction.parentNode.insertBefore(restartAction, createAction.nextSibling);
+      }
       setStatus(typeof config.getStatus === "function" ? config.getStatus() : "Pronto.", false);
       refreshProgress();
       body.querySelector("[data-action='import']").addEventListener("click", function () {
@@ -225,6 +252,9 @@
       });
       body.querySelector("[data-action='create']").addEventListener("click", function () {
         try { Promise.resolve(config.onCreate && config.onCreate(body.querySelector("#tec-folder-id").value)).then(function (message) { setStatus(message || "Automação iniciada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
+      });
+      body.querySelector("[data-action='restart']").addEventListener("click", function () {
+        try { Promise.resolve(config.onRestart && config.onRestart(body.querySelector("#tec-folder-id").value)).then(function (message) { setStatus(message || "Busca de materiais reiniciada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
       });
       body.querySelector("[data-action='current']").addEventListener("click", function () {
         try { Promise.resolve(config.onCurrent && config.onCurrent()).then(function (message) { setStatus(message || "Exportação iniciada.", false); refreshProgress(); }).catch(handleAutomationError); } catch (error) { handleAutomationError(error); }
@@ -314,10 +344,14 @@
       if (activeTab === "library") libraryView(); else if (activeTab === "ai-context") aiContextView(); else automationView();
       refreshProgress();
     }
-    launcher.addEventListener("click", function () { panel.classList.add("open"); launcher.style.display = "none"; render(); });
+    launcher.addEventListener("click", function () { panel.classList.add("open"); launcherWrap.style.display = "none"; render(); });
+    launcherPause.addEventListener("click", function (event) {
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      handleLauncherPause();
+    });
     panel.querySelector("[data-action='close']").addEventListener("click", function () {
       panel.classList.remove("open");
-      launcher.style.display = "block";
+      launcherWrap.style.display = "flex";
       scheduleProgressRefresh(false);
     });
     Array.from(panel.querySelectorAll("[data-tab]")).forEach(function (tab) {
@@ -328,7 +362,7 @@
       pageWindow.addEventListener("storage", function () { scheduleProgressRefresh(false); });
     }
     refreshProgress(false);
-    return { panel: panel, open: function () { panel.classList.add("open"); launcher.style.display = "none"; render(); }, refresh: render, setStatus: setStatus };
+    return { panel: panel, launcher: launcher, pauseButton: launcherPause, open: function () { panel.classList.add("open"); launcherWrap.style.display = "none"; render(); }, refresh: render, setStatus: setStatus };
   }
 
   return { createPanel: createPanel, completionSummary: completionSummary };

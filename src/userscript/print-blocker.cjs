@@ -9,10 +9,12 @@
   "use strict";
 
   var OUTPUT_PATH = /\/questoes\/cadernos\/\d+\/imprimir(?:\/|$)/i;
+  var IMAGE_PLACEHOLDER = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
   var PRINT_TARGETS = [];
   var GUARD_RECORDS = [];
   var PROTOTYPE_PATCHES = [];
   var BRIDGE_DOCUMENTS = [];
+  var IMAGE_GUARD_RECORDS = [];
 
   function locationBase(target) {
     var location = target && target.location;
@@ -31,6 +33,57 @@
 
   function isPrintRoute(value, target) {
     return OUTPUT_PATH.test(routePath(value, target));
+  }
+
+  function imageSource(value, target) {
+    var raw = String(value == null ? "" : value).trim();
+    if (!raw || raw === IMAGE_PLACEHOLDER) return "";
+    try { return new URL(raw, locationBase(target)).href; } catch (_) { return raw; }
+  }
+
+  function deferImageLoading(image, target) {
+    if (!image || typeof image.getAttribute !== "function" || typeof image.setAttribute !== "function") return false;
+    if (image.getAttribute("data-tec-image-deferred") === "1") return false;
+    var source = image.getAttribute("data-tec-original-src") || image.getAttribute("src") || image.getAttribute("data-src") || "";
+    var sourceSet = image.getAttribute("data-tec-original-srcset") || image.getAttribute("srcset") || "";
+    if (!source && !sourceSet) return false;
+    if (source) image.setAttribute("data-tec-original-src", imageSource(source, target));
+    if (sourceSet) {
+      image.setAttribute("data-tec-original-srcset", sourceSet);
+      if (typeof image.removeAttribute === "function") image.removeAttribute("srcset");
+    }
+    image.setAttribute("loading", "lazy");
+    image.setAttribute("decoding", "async");
+    if (source && source !== IMAGE_PLACEHOLDER) image.setAttribute("src", IMAGE_PLACEHOLDER);
+    image.setAttribute("data-tec-image-deferred", "1");
+    return true;
+  }
+
+  function installImageGuard(target, documentNode) {
+    if (!documentNode) return false;
+    var existing = IMAGE_GUARD_RECORDS.find(function (item) { return item.target === target && item.document === documentNode; });
+    if (existing) return true;
+    var scan = function (rootNode) {
+      if (!rootNode) return;
+      if (String(rootNode.tagName || "").toUpperCase() === "IMG") deferImageLoading(rootNode, target);
+      if (typeof rootNode.querySelectorAll === "function") Array.from(rootNode.querySelectorAll("img")).forEach(function (image) { deferImageLoading(image, target); });
+    };
+    scan(documentNode);
+    var Observer = target && target.MutationObserver;
+    if (!Observer && documentNode.defaultView) Observer = documentNode.defaultView.MutationObserver;
+    var observer = null;
+    if (typeof Observer === "function") {
+      try {
+        observer = new Observer(function (mutations) {
+          mutations.forEach(function (mutation) {
+            Array.from(mutation.addedNodes || []).forEach(scan);
+          });
+        });
+        observer.observe(documentNode.documentElement || documentNode, { childList: true, subtree: true });
+      } catch (_) { observer = null; }
+    }
+    IMAGE_GUARD_RECORDS.push({ target: target, document: documentNode, observer: observer });
+    return true;
   }
 
   function formAction(form) {
@@ -193,7 +246,7 @@
   }
 
   function pageWorldSource() {
-    return "(function(){if(window.__tecConcursosPrintGuard)return;var route=/\\/questoes\\/cadernos\\/\\d+\\/imprimir(?:\\/|$)/i.test(String(location&&location.pathname||''));if(!route)return;var isPrint=function(value){if(value==null||value==='')return false;try{return /\\/questoes\\/cadernos\\/\\d+\\/imprimir(?:\\/|$)/i.test(new URL(String(value),location.href).pathname);}catch(_){return /\\/questoes\\/cadernos\\/\\d+\\/imprimir/i.test(String(value));}};var blocked=function(){return undefined;};try{Object.defineProperty(window,'print',{configurable:false,enumerable:true,get:function(){return blocked;},set:function(){}});}catch(_){try{window.print=blocked;}catch(__){}}var originalOpen=window.open;if(typeof originalOpen==='function'){try{Object.defineProperty(window,'open',{configurable:true,writable:true,value:function(url){if(isPrint(url))return null;return originalOpen.apply(this,arguments);}});}catch(_){}}var proto=window.HTMLFormElement&&window.HTMLFormElement.prototype;['submit','requestSubmit'].forEach(function(name){if(!proto||typeof proto[name]!=='function')return;var original=proto[name];try{Object.defineProperty(proto,name,{configurable:true,writable:true,value:function(){var action=this.getAttribute&&this.getAttribute('action')||this.action||'';if(isPrint(action))return undefined;return original.apply(this,arguments);}});}catch(_){}});var cancel=function(event){var node=event&&event.target;var form=node&&(node.form||node);var action=form&&(form.getAttribute&&form.getAttribute('action')||form.action||'');var href=node&&(node.href||(node.getAttribute&&node.getAttribute('href')));if(isPrint(action)||isPrint(href)){event.preventDefault&&event.preventDefault();event.stopImmediatePropagation&&event.stopImmediatePropagation();event.stopPropagation&&event.stopPropagation();}};document.addEventListener('click',cancel,true);document.addEventListener('submit',cancel,true);try{Object.defineProperty(window,'__tecConcursosPrintGuard',{configurable:false,value:true});}catch(_){window.__tecConcursosPrintGuard=true;}})();";
+    return String.raw`(function(){if(window.__tecConcursosPrintGuard)return;var route=/\/questoes\/cadernos\/\d+\/imprimir(?:\/|$)/i.test(String(location&&location.pathname||''));if(!route)return;var placeholder='${IMAGE_PLACEHOLDER}';var isPrint=function(value){if(value==null||value==='')return false;try{return /\/questoes\/cadernos\/\d+\/imprimir(?:\/|$)/i.test(new URL(String(value),location.href).pathname);}catch(_){return /\/questoes\/cadernos\/\d+\/imprimir/i.test(String(value));}};var defer=function(image){if(!image||!image.getAttribute||!image.setAttribute||image.getAttribute('data-tec-image-deferred')==='1')return;var source=image.getAttribute('data-tec-original-src')||image.getAttribute('src')||image.getAttribute('data-src')||'';var sourceSet=image.getAttribute('data-tec-original-srcset')||image.getAttribute('srcset')||'';if(!source&&!sourceSet)return;if(source&&source!==placeholder)image.setAttribute('data-tec-original-src',source);if(sourceSet){image.setAttribute('data-tec-original-srcset',sourceSet);image.removeAttribute&&image.removeAttribute('srcset');}image.setAttribute('loading','lazy');image.setAttribute('decoding','async');if(source&&source!==placeholder)image.setAttribute('src',placeholder);image.setAttribute('data-tec-image-deferred','1');};var scan=function(node){if(!node)return;if(String(node.tagName||'').toUpperCase()==='IMG')defer(node);if(node.querySelectorAll)Array.prototype.forEach.call(node.querySelectorAll('img'),defer);};scan(document);var Observer=window.MutationObserver;if(typeof Observer==='function'&&!window.__tecConcursosImageObserver){try{var observer=new Observer(function(mutations){mutations.forEach(function(mutation){Array.prototype.forEach.call(mutation.addedNodes||[],scan);});});observer.observe(document.documentElement||document,{childList:true,subtree:true});window.__tecConcursosImageObserver=observer;}catch(_){}}var imageProto=window.HTMLImageElement&&window.HTMLImageElement.prototype;var srcDescriptor=imageProto&&Object.getOwnPropertyDescriptor(imageProto,'src');if(srcDescriptor&&srcDescriptor.set){try{Object.defineProperty(imageProto,'src',{configurable:srcDescriptor.configurable,enumerable:srcDescriptor.enumerable,get:srcDescriptor.get,set:function(value){var source=String(value==null?'':value);if(source&&source!==placeholder){this.setAttribute('data-tec-original-src',source);this.setAttribute('loading','lazy');this.setAttribute('decoding','async');this.setAttribute('data-tec-image-deferred','1');return srcDescriptor.set.call(this,placeholder);}return srcDescriptor.set.call(this,value);}});}catch(_){}}var blocked=function(){return undefined;};try{Object.defineProperty(window,'print',{configurable:false,enumerable:true,get:function(){return blocked;},set:function(){}});}catch(_){try{window.print=blocked;}catch(__){}}var originalOpen=window.open;if(typeof originalOpen==='function'){try{Object.defineProperty(window,'open',{configurable:true,writable:true,value:function(url){if(isPrint(url))return null;return originalOpen.apply(this,arguments);}});}catch(_){}}var proto=window.HTMLFormElement&&window.HTMLFormElement.prototype;['submit','requestSubmit'].forEach(function(name){if(!proto||typeof proto[name]!=='function')return;var original=proto[name];try{Object.defineProperty(proto,name,{configurable:true,writable:true,value:function(){var action=this.getAttribute&&this.getAttribute('action')||this.action||'';if(isPrint(action))return undefined;return original.apply(this,arguments);}});}catch(_){}});var cancel=function(event){var node=event&&event.target;var form=node&&(node.form||node);var action=form&&(form.getAttribute&&form.getAttribute('action')||form.action||'');var href=node&&(node.href||(node.getAttribute&&node.getAttribute('href')));if(isPrint(action)||isPrint(href)){event.preventDefault&&event.preventDefault();event.stopImmediatePropagation&&event.stopImmediatePropagation();event.stopPropagation&&event.stopPropagation();}};document.addEventListener('click',cancel,true);document.addEventListener('submit',cancel,true);try{Object.defineProperty(window,'__tecConcursosPrintGuard',{configurable:false,value:true});}catch(_){window.__tecConcursosPrintGuard=true;}})();`;
   }
 
   function installPageWorldBridge(documentNode, options) {
@@ -231,6 +284,7 @@
     if (config.enabled === false) return true;
     var pageWindow = config.pageWindow || (typeof unsafeWindow !== "undefined" ? unsafeWindow : rootNode);
     installPrintGuards(pageWindow, rootNode && rootNode.document);
+    installImageGuard(pageWindow, rootNode && rootNode.document);
     var addElement = config.addElement;
     if (typeof addElement !== "function") {
       try { addElement = typeof GM_addElement === "function" ? GM_addElement : null; } catch (_) { addElement = null; }
@@ -244,6 +298,9 @@
     installPrintBlock: installPrintBlock,
     installPrintGuards: installPrintGuards,
     installPageWorldBridge: installPageWorldBridge,
+    installImageGuard: installImageGuard,
+    deferImageLoading: deferImageLoading,
+    IMAGE_PLACEHOLDER: IMAGE_PLACEHOLDER,
     isPrintRoute: isPrintRoute,
     suppressNativePrintOnOutputPage: suppressNativePrintOnOutputPage
   };
