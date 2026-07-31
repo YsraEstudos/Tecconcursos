@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      2.5.18
+// @version      2.6.0
 // @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.
 // @author       Codex
 // @match        https://www.tecconcursos.com.br/*
@@ -199,6 +199,192 @@
     getQuestionIndex: getQuestionIndex,
     fetchQuestionAnswer: fetchQuestionAnswer,
     enrichQuestionFromApi: enrichQuestionFromApi
+  };
+});
+
+// ---- gabarito.cjs ----
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) {
+    root.TecConcursosModules = root.TecConcursosModules || {};
+    root.TecConcursosModules.gabarito = api;
+  }
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  "use strict";
+
+  var RESPOSTA_SPAN = /<span[^>]*class=["'][^"']*\bresposta\b[^"']*["'][^>]*>\s*(?:<strong[^>]*>\s*(\d+)\s*[)]\s*<\/strong>\s*)?([^<]+?)\s*<\/span>/gi;
+  var GABARITO_DIV = /<div\b[^>]*\bid=["']gabarito["'][^>]*>/gi;
+
+  function getCadernoId(documentNode) {
+    var locationLike = documentNode && documentNode.location;
+    var pathname = locationLike && locationLike.pathname ? String(locationLike.pathname) : "";
+    var match = pathname.match(/\/questoes\/cadernos\/(\d+)/i);
+    return match ? match[1] : "";
+  }
+
+  function extractGabaritoBlockAt(html, start) {
+    var depth = 0;
+    var i = start;
+    while (i < html.length) {
+      var open = html.indexOf("<div", i);
+      var close = html.indexOf("</div", i);
+      var next = open === -1 ? close : close === -1 ? open : Math.min(open, close);
+      if (next < 0) break;
+      if (next === open) {
+        depth += 1;
+        i = open + 4;
+      } else {
+        depth -= 1;
+        i = close + 5;
+        if (depth <= 0) return html.slice(start, i);
+      }
+    }
+    return html.slice(start);
+  }
+
+  function extractGabaritoBlocks(html) {
+    var text = String(html || "");
+    var blocks = [];
+    var lastEnd = 0;
+    var divRe = new RegExp(GABARITO_DIV.source, GABARITO_DIV.flags);
+    var match;
+    while ((match = divRe.exec(text)) !== null) {
+      if (match.index < lastEnd) continue;
+      var block = extractGabaritoBlockAt(text, match.index);
+      blocks.push(block);
+      lastEnd = match.index + block.length;
+      divRe.lastIndex = lastEnd;
+    }
+    return blocks;
+  }
+
+  function parseGabaritoHtml(html) {
+    var blocks = extractGabaritoBlocks(html);
+    var entries = [];
+    for (var b = 0; b < blocks.length; b += 1) {
+      var re = new RegExp(RESPOSTA_SPAN.source, RESPOSTA_SPAN.flags);
+      var match;
+      while ((match = re.exec(blocks[b])) !== null) {
+        var answer = String(match[2] || "").replace(/&nbsp;/g, " ").trim();
+        if (!answer) continue;
+        entries.push({
+          index: match[1] ? Number(match[1]) : 0,
+          answer: answer
+        });
+      }
+    }
+    return entries;
+  }
+
+  function parseGabaritoDocument(documentNode) {
+    if (!documentNode || typeof documentNode.querySelectorAll !== "function") return [];
+    var entries = [];
+    var nodes = documentNode.querySelectorAll("#gabarito .resposta");
+    for (var i = 0; i < nodes.length; i += 1) {
+      var node = nodes[i];
+      var numberNode = node.querySelector ? node.querySelector("strong") : null;
+      var rawNumber = numberNode ? String(numberNode.textContent || "") : "";
+      var index = Number(rawNumber.replace(/[^\d]/g, ""));
+      var answer = String(node.textContent || "").replace(/^\s*\d+\s*\)\s*/, "").trim();
+      if (!index || !answer) continue;
+      entries.push({ index: index, answer: answer });
+    }
+    return entries;
+  }
+
+  function applyToQuestions(questions, entries) {
+    var list = Array.isArray(questions) ? questions : [];
+    var byIndex = {};
+    (Array.isArray(entries) ? entries : []).forEach(function (entry) {
+      var index = Number(entry && entry.index);
+      if (index > 0 && entry.answer) byIndex[index] = String(entry.answer).trim();
+    });
+    var applied = 0;
+    var updated = list.map(function (question) {
+      if (!question || question.gabarito) return question;
+      var index = Number(question.cadernoIndex);
+      var answer = byIndex[index];
+      if (!index || !answer) return question;
+      applied += 1;
+      return Object.assign({}, question, {
+        gabarito: answer,
+        answerField: "gabarito",
+        answerSource: "print-page"
+      });
+    });
+    return { questions: updated, applied: applied };
+  }
+
+  function getFetch(documentNode, fetchImpl) {
+    if (typeof fetchImpl === "function") return fetchImpl;
+    var windowLike = documentNode && documentNode.defaultView;
+    if (windowLike && typeof windowLike.fetch === "function") return windowLike.fetch.bind(windowLike);
+    if (typeof fetch === "function") return fetch;
+    throw new Error("Fetch não está disponível nesta página.");
+  }
+
+  function wait(ms, waitImpl) {
+    if (typeof waitImpl === "function") return waitImpl(ms);
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  function printUrl(cadernoId, count) {
+    var url = "/questoes/cadernos/" + encodeURIComponent(cadernoId) + "/imprimir";
+    if (Number(count) > 0) {
+      url += "?questaoInicial=1&numeroQuestoes=" + encodeURIComponent(count);
+    }
+    return url;
+  }
+
+  async function fetchCadernoGabarito(documentNode, options) {
+    var config = options || {};
+    var cadernoId = config.cadernoId || getCadernoId(documentNode);
+    if (!cadernoId) throw new Error("ID do caderno não encontrado.");
+
+    var fetchImpl = getFetch(documentNode, config.fetchImpl);
+    var retryCount = Number(config.retryCount) > 0 ? Math.floor(Number(config.retryCount)) : 3;
+    var retryDelayMs = Number(config.retryDelayMs) >= 0 ? Number(config.retryDelayMs) : 1000;
+    var urls = [printUrl(cadernoId, 0)];
+    if (Number(config.count) > 0) urls.push(printUrl(cadernoId, Number(config.count)));
+    var lastError = null;
+
+    for (var u = 0; u < urls.length; u += 1) {
+      for (var attempt = 1; attempt <= retryCount; attempt += 1) {
+        try {
+          var response = await fetchImpl(urls[u], {
+            credentials: "include",
+            headers: {
+              "Accept": "text/html, application/xhtml+xml, */*",
+              "X-Requested-With": "XMLHttpRequest"
+            }
+          });
+          if (!response || !response.ok) {
+            throw new Error("HTTP " + (response && response.status ? response.status : "desconhecido"));
+          }
+          var payload = await response.text();
+          var parsed = parseGabaritoHtml(payload);
+          if (!parsed.length && payload && typeof payload.querySelectorAll === "function") {
+            parsed = parseGabaritoDocument(payload);
+          }
+          if (parsed.length) return parsed;
+          lastError = new Error("A página de impressão não exibiu o bloco de gabarito.");
+          break;
+        } catch (error) {
+          lastError = error;
+          if (attempt < retryCount) await wait(retryDelayMs * attempt, config.waitImpl);
+        }
+      }
+    }
+    throw lastError || new Error("Não foi possível consultar o gabarito do caderno.");
+  }
+
+  return {
+    getCadernoId: getCadernoId,
+    parseGabaritoHtml: parseGabaritoHtml,
+    parseGabaritoDocument: parseGabaritoDocument,
+    applyToQuestions: applyToQuestions,
+    fetchCadernoGabarito: fetchCadernoGabarito
   };
 });
 
@@ -1511,15 +1697,20 @@
 
 // ---- library.cjs ----
 (function (root, factory) {
-  var api = factory();
+  var api = factory(
+    typeof module !== "undefined" && module.exports
+      ? { gabarito: require("./gabarito.cjs") }
+      : { gabarito: root.TecConcursosModules.gabarito }
+  );
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root) {
     root.TecConcursosModules = root.TecConcursosModules || {};
     root.TecConcursosModules.library = api;
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (deps) {
   "use strict";
 
+  var gabaritoModule = deps && deps.gabarito;
   var LIBRARY_KEY = "tecconcursos_export_library_v1";
 
   function clean(value) {
@@ -1657,9 +1848,28 @@
     };
   }
 
+  function applyGabaritoBlock(questions, documentNode) {
+    if (!questions.length || !gabaritoModule || typeof gabaritoModule.parseGabaritoDocument !== "function") return questions;
+    var entries = gabaritoModule.parseGabaritoDocument(documentNode);
+    if (!entries.length) return questions;
+    var byNumber = {};
+    entries.forEach(function (entry) {
+      if (entry.index > 0 && entry.answer) byNumber[entry.index] = String(entry.answer).trim();
+    });
+    return questions.map(function (question) {
+      var answer = question.answer || byNumber[Number(question.number)];
+      if (!answer || answer === question.answer) return question;
+      return Object.assign({}, question, {
+        answer: answer,
+        answerField: "gabarito",
+        answerSource: "print-page"
+      });
+    });
+  }
+
   function extractPrintedQuestions(documentNode) {
     if (!documentNode || typeof documentNode.querySelectorAll !== "function") return [];
-    return Array.from(documentNode.querySelectorAll(".questao")).map(parsePrintedQuestion);
+    return applyGabaritoBlock(Array.from(documentNode.querySelectorAll(".questao")).map(parsePrintedQuestion), documentNode);
   }
 
   function yieldToBrowser(documentNode) {
@@ -1688,7 +1898,7 @@
         pauseCheck();
       }
     }
-    return questions;
+    return applyGabaritoBlock(questions, documentNode);
   }
 
   function cadernoIdFromLocation(locationLike) {
@@ -1782,7 +1992,7 @@
         question.number || index + 1, entry.title, entry.code, question.bank, question.year,
         question.vacancy, question.organization, question.role, question.subject, question.topic,
         question.id, question.url, question.statement, alternatives.A, alternatives.B,
-        alternatives.C, alternatives.D, alternatives.E, question.answer
+        alternatives.C, alternatives.D, alternatives.E, question.answer || question.gabarito
       ].map(csvValue).join(";"));
     });
     return "\uFEFF" + lines.join("\r\n");
@@ -1838,7 +2048,7 @@
     (entry.questions || []).forEach(function (question, index) {
       var alternatives = {};
       (question.options || []).forEach(function (option) { alternatives[option.letter] = option.text; });
-      var row = [question.number || index + 1, entry.title, entry.code, question.bank, question.year, question.vacancy, question.organization, question.role, question.subject, question.topic, question.id, question.url, question.statement, alternatives.A, alternatives.B, alternatives.C, alternatives.D, alternatives.E, question.answer];
+      var row = [question.number || index + 1, entry.title, entry.code, question.bank, question.year, question.vacancy, question.organization, question.role, question.subject, question.topic, question.id, question.url, question.statement, alternatives.A, alternatives.B, alternatives.C, alternatives.D, alternatives.E, question.answer || question.gabarito];
       (questionImages && questionImages[index] || []).forEach(function (source) {
         row.push(imageAssets && imageAssets.has(source) ? "[imagem incorporada]" : source);
       });
@@ -3956,6 +4166,8 @@
       selectors: require("./selectors.cjs"),
       parser: require("./parse-question.cjs"),
       api: require("./api.cjs"),
+      gabarito: require("./gabarito.cjs"),
+      library: require("./library.cjs"),
       navigation: require("./navigation.cjs"),
       format: require("./format.cjs"),
       timing: require("./timing.cjs")
@@ -3975,6 +4187,8 @@
     var storage = config.storage;
     var parser = config.parser;
     var questionApi = config.api || deps.api;
+    var gabarito = config.gabarito || deps.gabarito;
+    var libraryModule = config.library || deps.library;
     var navigation = config.navigation;
     var format = config.format;
     var timing = config.timing;
@@ -4071,6 +4285,30 @@
       };
     }
 
+    async function applyOfficialGabarito(onStatus) {
+      if (!gabarito || typeof gabarito.fetchCadernoGabarito !== "function" || typeof gabarito.applyToQuestions !== "function") return;
+      var questions = readQuestions();
+      if (!questions.length) return;
+      if (questions.every(function (item) { return item.gabarito; })) return;
+      var lastIndex = 0;
+      questions.forEach(function (item) {
+        lastIndex = Math.max(lastIndex, Number(item.cadernoIndex) || 0);
+      });
+      try {
+        onStatus("Coletando o gabarito oficial do caderno no final das questões...");
+        var entries = await gabarito.fetchCadernoGabarito(documentNode, Object.assign({}, apiOptions, { count: lastIndex }));
+        var result = gabarito.applyToQuestions(readQuestions(), entries);
+        if (result.applied > 0) {
+          writeQuestions(result.questions);
+          onStatus("Gabarito oficial aplicado a " + result.applied + " questão(ões) que estavam sem resposta.");
+        } else {
+          onStatus("Gabarito oficial verificado: nenhuma questão precisava de resposta.");
+        }
+      } catch (error) {
+        onStatus("Não foi possível coletar o gabarito oficial: " + String(error && error.message || error));
+      }
+    }
+
     async function start(settings) {
       if (running) return { stopped: false, reason: "already-running", count: readQuestions().length };
       var runSettings = settings || {};
@@ -4079,6 +4317,7 @@
       runToken = token;
       running = true;
       var addedThisRun = 0;
+      var endReached = false;
       var status = typeof runSettings.onStatus === "function" ? runSettings.onStatus : function () {};
       try {
         while (running && token === runToken) {
@@ -4103,11 +4342,14 @@
           }
           if (limit > 0 && addedThisRun >= limit) {
             status("Limite de " + limit + " questão(ões) nova(s) atingido.");
+            var lastButton = deps.selectors.findNextButton(documentNode);
+            endReached = !lastButton || lastButton.disabled;
             break;
           }
 
           var nextButton = deps.selectors.findNextButton(documentNode);
           if (!nextButton || nextButton.disabled) {
+            endReached = true;
             status("Fim do caderno ou botão 'Próxima questão' indisponível.");
             break;
           }
@@ -4140,6 +4382,9 @@
             status("A próxima questão não carregou no tempo esperado.");
             break;
           }
+        }
+        if (endReached) {
+          await applyOfficialGabarito(status);
         }
       } finally {
         running = false;
@@ -4177,6 +4422,57 @@
       return questions.length;
     }
 
+    function buildLibraryEntry(questions, options) {
+      var list = Array.isArray(questions) ? questions : [];
+      var config = options || {};
+      var entryLibrary = config.library || libraryModule;
+      var parseHeader = entryLibrary && typeof entryLibrary.parseHeader === "function" ? entryLibrary.parseHeader : null;
+      var cadernoId = config.cadernoId || (
+        questionApi && typeof questionApi.getCadernoId === "function" ? questionApi.getCadernoId(documentNode) : ""
+      );
+      return {
+        id: "coletor-" + (cadernoId || String(new Date().getTime())),
+        code: cadernoId || "",
+        title: cadernoId ? "Caderno #" + cadernoId : "Caderno coletado",
+        group: "Coletor de Questões",
+        questions: list.map(function (question) {
+          var header = parseHeader && question.header ? parseHeader(question.header) : {};
+          return Object.assign({}, question, {
+            bank: question.bank || header.bank || "",
+            year: question.year != null ? question.year : header.year,
+            vacancy: question.vacancy || header.vacancy || "",
+            organization: question.organization || header.organization || "",
+            role: question.role || header.role || "",
+            subject: question.subject || "",
+            topic: question.topic || "",
+            number: Number(question.cadernoIndex) || 0,
+            answer: question.answer || question.gabarito || ""
+          });
+        })
+      };
+    }
+
+    function exportHtml(documentForDownload, options) {
+      var questions = readQuestions();
+      if (!questions.length) return 0;
+      var entry = buildLibraryEntry(questions, options);
+      var entryLibrary = (options && options.library) || libraryModule;
+      if (!entryLibrary || typeof entryLibrary.buildInteractiveHtml !== "function" || typeof entryLibrary.downloadBlob !== "function") return 0;
+      entryLibrary.downloadBlob(documentForDownload, entryLibrary.outputBaseName(entry) + ".html", new Blob([entryLibrary.buildInteractiveHtml(entry)], { type: "text/html;charset=utf-8" }));
+      return questions.length;
+    }
+
+    async function exportExcel(documentForDownload, options) {
+      var questions = readQuestions();
+      if (!questions.length) return 0;
+      var entry = buildLibraryEntry(questions, options);
+      var entryLibrary = (options && options.library) || libraryModule;
+      if (!entryLibrary || typeof entryLibrary.buildXlsxBlob !== "function" || typeof entryLibrary.downloadBlob !== "function") return 0;
+      var blob = await entryLibrary.buildXlsxBlob(entry);
+      entryLibrary.downloadBlob(documentForDownload, entryLibrary.outputBaseName(entry) + ".xlsx", blob);
+      return questions.length;
+    }
+
     return {
       start: start,
       stop: stop,
@@ -4185,7 +4481,10 @@
       getQuestions: getQuestions,
       clear: clear,
       exportText: exportText,
-      exportJson: exportJson
+      exportJson: exportJson,
+      buildLibraryEntry: buildLibraryEntry,
+      exportHtml: exportHtml,
+      exportExcel: exportExcel
     };
   }
 
@@ -4264,13 +4563,17 @@
     var stop = button(documentNode, "⏸ Pausar", "tec-scraper-stop");
     var text = button(documentNode, "TXT", "tec-scraper-export-txt");
     var json = button(documentNode, "JSON", "tec-scraper-export-json");
+    var html = button(documentNode, "HTML", "tec-scraper-export-html");
+    var excel = button(documentNode, "Excel", "tec-scraper-export-excel");
     var clear = button(documentNode, "Limpar", "tec-scraper-clear");
     start.style.background = "#059669";
     stop.style.background = "#dc2626";
     text.style.background = "#2563eb";
     json.style.background = "#4f46e5";
+    html.style.background = "#0891b2";
+    excel.style.background = "#65a30d";
     clear.style.background = "#4b5563";
-    [start, stop, text, json, clear].forEach(function (item) { row.appendChild(item); });
+    [start, stop, text, json, html, excel, clear].forEach(function (item) { row.appendChild(item); });
     panel.appendChild(row);
     documentNode.body.appendChild(panel);
 
@@ -4299,6 +4602,12 @@
     });
     json.addEventListener("click", function () {
       if (typeof config.onExportJson === "function") config.onExportJson();
+    });
+    html.addEventListener("click", function () {
+      if (typeof config.onExportHtml === "function") config.onExportHtml();
+    });
+    excel.addEventListener("click", function () {
+      if (typeof config.onExportExcel === "function") config.onExportExcel();
     });
     clear.addEventListener("click", function () {
       if (typeof config.onClear === "function") config.onClear();
@@ -4374,6 +4683,7 @@
     documentNode.head.appendChild(style);
     style.textContent += "#tec-library-panel .completion-summary{margin:10px 0;border:1px solid #dbeafe;border-radius:9px;background:#fff;padding:10px}#tec-library-panel .completion-summary strong{display:block;margin-bottom:7px}#tec-library-panel .completion-summary ol{margin:0;padding-left:24px}#tec-library-panel .completion-summary li{padding:3px 0;color:#334155}#tec-library-panel .completion-summary li.completed{color:#047857}#tec-library-panel .completion-summary li.failed{color:#b91c1c}#tec-library-panel .completion-summary li.active{color:#1d4ed8}";
     style.textContent += "#tec-library-launcher-wrap{position:fixed;left:18px;bottom:18px;z-index:2147483646;display:flex;align-items:stretch;gap:6px}#tec-library-launcher{position:static;left:auto;bottom:auto}#tec-library-pause{border:0;border-radius:999px;background:#b91c1c;color:#fff;padding:0 13px;font:700 13px system-ui;box-shadow:0 8px 22px #7f1d1d55;cursor:pointer;white-space:nowrap}#tec-library-pause:hover{background:#991b1b}#tec-library-pause:disabled{background:#94a3b8;box-shadow:none;cursor:not-allowed;opacity:.85}";
+    style.textContent += "#tec-library-print-card{display:flex;align-items:center;gap:10px;min-width:0;padding:0;border:1px solid transparent;border-radius:14px;background:transparent;box-shadow:none;transition:padding .5s cubic-bezier(.22,1,.36,1),background .5s ease,box-shadow .5s ease,border-color .5s ease}#tec-library-launcher-wrap.print-mode{gap:0}#tec-library-launcher-wrap.print-mode #tec-library-print-card{padding:9px 12px;background:linear-gradient(135deg,#111827,#1e3a8a);box-shadow:0 12px 32px rgba(15,23,42,.5);border-color:rgba(255,255,255,.14)}#tec-library-launcher{transition:max-width .5s cubic-bezier(.22,1,.36,1),opacity .35s ease,transform .5s cubic-bezier(.22,1,.36,1),padding .5s cubic-bezier(.22,1,.36,1)}#tec-library-launcher-wrap.print-mode #tec-library-launcher{max-width:0;overflow:hidden;padding:0;border:0;opacity:0;transform:translateX(-12px) scale(.88);pointer-events:none}#tec-library-print-card .card-info{display:flex;flex-direction:column;gap:3px;min-width:0;max-width:0;overflow:hidden;white-space:nowrap;opacity:0;transform:translateX(-14px);transition:max-width .5s cubic-bezier(.22,1,.36,1),opacity .35s ease,transform .5s cubic-bezier(.22,1,.36,1)}#tec-library-launcher-wrap.print-mode #tec-library-print-card .card-info{max-width:320px;opacity:1;transform:translateX(0)}#tec-library-print-card .card-label{font:700 10px system-ui;letter-spacing:.14em;text-transform:uppercase;color:#93c5fd;opacity:0;transform:translateY(6px);transition:opacity .3s ease .1s,transform .45s cubic-bezier(.22,1,.36,1) .1s}#tec-library-print-card .card-title{font:700 13px system-ui;color:#f9fafb;text-overflow:ellipsis;overflow:hidden;opacity:0;transform:translateY(6px);transition:opacity .3s ease .18s,transform .45s cubic-bezier(.22,1,.36,1) .18s}#tec-library-print-card .card-meta{display:flex;align-items:center;gap:8px;opacity:0;transform:translateY(6px);transition:opacity .3s ease .26s,transform .45s cubic-bezier(.22,1,.36,1) .26s}#tec-library-print-card .card-parts{font:600 11px system-ui;color:#cbd5e1}#tec-library-print-card .card-remaining{font:700 11px system-ui;color:#fbbf24;background:#78350f66;border:1px solid #fbbf2444;border-radius:999px;padding:1px 8px}#tec-library-print-card .card-bar{height:3px;border-radius:999px;background:#1f2937;overflow:hidden;opacity:0;transition:opacity .3s ease .34s}#tec-library-print-card .card-bar i{display:block;height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,#059669,#3b82f6);transition:width .6s cubic-bezier(.22,1,.36,1)}#tec-library-launcher-wrap.print-mode #tec-library-print-card .card-label,#tec-library-launcher-wrap.print-mode #tec-library-print-card .card-title,#tec-library-launcher-wrap.print-mode #tec-library-print-card .card-meta,#tec-library-launcher-wrap.print-mode #tec-library-print-card .card-bar{opacity:1;transform:translateY(0)}";
 
     var launcher = button(documentNode, "", "");
     launcher.id = "tec-library-launcher";
@@ -4389,10 +4699,38 @@
     launcherPause.id = "tec-library-pause";
     launcherPause.dataset.tecScraperVersion = "2.5.18";
     launcherPause.setAttribute("aria-label", "Parar automação");
+    var printCard = documentNode.createElement("div");
+    printCard.id = "tec-library-print-card";
+    var cardInfo = documentNode.createElement("div");
+    cardInfo.className = "card-info";
+    var cardLabel = documentNode.createElement("span");
+    cardLabel.className = "card-label";
+    cardLabel.textContent = "Imprimindo caderno";
+    var cardTitle = documentNode.createElement("span");
+    cardTitle.className = "card-title";
+    cardTitle.textContent = "Caderno";
+    var cardMeta = documentNode.createElement("span");
+    cardMeta.className = "card-meta";
+    var cardParts = documentNode.createElement("span");
+    cardParts.className = "card-parts";
+    var cardRemaining = documentNode.createElement("span");
+    cardRemaining.className = "card-remaining";
+    cardMeta.appendChild(cardParts);
+    cardMeta.appendChild(cardRemaining);
+    var cardBar = documentNode.createElement("span");
+    cardBar.className = "card-bar";
+    var cardBarFill = documentNode.createElement("i");
+    cardBar.appendChild(cardBarFill);
+    cardInfo.appendChild(cardLabel);
+    cardInfo.appendChild(cardTitle);
+    cardInfo.appendChild(cardMeta);
+    cardInfo.appendChild(cardBar);
+    printCard.appendChild(cardInfo);
+    printCard.appendChild(launcherPause);
     var launcherWrap = documentNode.createElement("div");
     launcherWrap.id = "tec-library-launcher-wrap";
     launcherWrap.appendChild(launcher);
-    launcherWrap.appendChild(launcherPause);
+    launcherWrap.appendChild(printCard);
     var panel = documentNode.createElement("section");
     panel.id = "tec-library-panel";
     panel.dataset.tecScraperVersion = "2.5.18";
@@ -4497,6 +4835,20 @@
       node.appendChild(list);
     }
 
+    function updatePrintCard(progress) {
+      var printMode = Boolean(progress && progress.running && Number(progress.rangesTotal) > 0 && progress.rangeIndex != null);
+      launcherWrap.classList.toggle("print-mode", printMode);
+      if (!printMode) return;
+      var total = Math.max(1, Number(progress.rangesTotal) || 1);
+      var index = Math.max(0, Number(progress.rangeIndex) || 0);
+      var remaining = Math.max(0, total - index - 1);
+      cardTitle.textContent = String(progress.matterTitle || "Caderno");
+      cardTitle.title = String(progress.matterTitle || "");
+      cardParts.textContent = "Parte " + String(index + 1) + " de " + total;
+      cardRemaining.textContent = remaining <= 0 ? "última parte" : remaining === 1 ? "falta 1 parte" : "faltam " + remaining + " partes";
+      cardBarFill.style.width = Math.min(100, Math.round((index / total) * 100)) + "%";
+    }
+
     function refreshProgress(includeSummary) {
       var progress = progressSnapshot();
       var label = progressLabel(progress);
@@ -4504,6 +4856,7 @@
       launcher.title = progressDetails(progress);
       launcherPause.disabled = !progress.running;
       launcherPause.title = progress.running ? "Parar a automação agora. " + progressDetails(progress) : "A automação não está em execução.";
+      updatePrintCard(progress);
       var progressNode = body.querySelector("#tec-progress");
       if (progressNode) {
         progressNode.textContent = progressDetails(progress);
@@ -5200,6 +5553,7 @@
         storage: storage,
         parser: modules.parseQuestion,
         api: modules.api,
+        gabarito: modules.gabarito,
         apiOptions: { retryCount: 3, retryDelayMs: 1000 },
         navigation: modules.navigation,
         format: modules.format,
@@ -5237,6 +5591,21 @@
         onExportJson: function () {
           var count = collector.exportJson(documentNode);
           ui.setStatus(count + " questão(ões) exportada(s) para JSON.", false);
+        },
+        onExportHtml: function () {
+          try {
+            var count = collector.exportHtml(documentNode, { library: modules.library });
+            ui.setStatus(count ? count + " questão(ões) exportada(s) para HTML interativo." : "Nenhuma questão salva para exportar.", false);
+          } catch (error) {
+            ui.setStatus("Falha ao exportar HTML: " + String(error && error.message || error), true);
+          }
+        },
+        onExportExcel: function () {
+          Promise.resolve(collector.exportExcel(documentNode, { library: modules.library })).then(function (count) {
+            ui.setStatus(count ? count + " questão(ões) exportada(s) para Excel." : "Nenhuma questão salva para exportar.", false);
+          }).catch(function (error) {
+            ui.setStatus("Falha ao exportar Excel: " + String(error && error.message || error), true);
+          });
         },
         onClear: function () {
           if (!root.confirm || root.confirm("Limpar as questões salvas?")) {

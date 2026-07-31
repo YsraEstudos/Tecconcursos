@@ -10,7 +10,7 @@ const metadata = [
   "// ==UserScript==",
   "// @name         TecConcursos - Coletor de Questões Pro",
   "// @namespace    https://github.com/YsraEstudos/Tecconcursos",
-  "// @version      2.5.18",
+  "// @version      2.6.0",
   "// @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.",
   "// @author       Codex",
   "// @match        https://www.tecconcursos.com.br/*",
@@ -38,6 +38,7 @@ const metadata = [
 const moduleOrder = [
   { dir: sharedDir, name: "answer.cjs" },
   { dir: sourceDir, name: "api.cjs" },
+  { dir: sourceDir, name: "gabarito.cjs" },
   ...[
     "selectors.cjs",
     "parse-question.cjs",

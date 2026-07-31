@@ -164,6 +164,42 @@ test("cede o thread entre lotes e interrompe a extração quando a automação �
   assert.equal(checks, 2);
 });
 
+test("extrai o gabarito do bloco #gabarito da página impressa e aplica às questões pelo número", () => {
+  const makeQuestionNode = (number, answerInline) => ({
+    querySelector(selector) {
+      if (selector === "a[href*='/questoes/']") return { href: "https://www.tecconcursos.com.br/questoes/" + number };
+      if (selector === ".cabecalho .informacoes") return { children: [{ className: "", innerText: "FCC - Cargo/Órgão/Cargo/2025" }] };
+      if (selector === ".classificacao") return { innerText: "Língua Portuguesa - Coesão" };
+      if (selector === ".enunciado") return { innerText: number + ") Enunciado", innerHTML: number + ") Enunciado" };
+      if (selector === ".enunciado strong") return { innerText: number + ")" };
+      if (selector === ".gabarito, .resposta-correta") return answerInline ? { innerText: answerInline } : null;
+      return null;
+    },
+    querySelectorAll() { return []; }
+  });
+  const answerNode = (number, answer) => ({
+    textContent: number + ") " + answer,
+    querySelector: (selector) => (selector === "strong" ? { textContent: number + ")" } : null)
+  });
+  const documentNode = {
+    querySelectorAll(selector) {
+      if (selector === ".questao") return [makeQuestionNode(1, null), makeQuestionNode(2, null), makeQuestionNode(3, "D")];
+      if (selector === "#gabarito .resposta") return [answerNode(1, "B"), answerNode(2, "Errado"), answerNode(3, "D")];
+      return [];
+    }
+  };
+
+  const questions = library.extractPrintedQuestions(documentNode);
+
+  assert.equal(questions.length, 3);
+  assert.equal(questions[0].answer, "B");
+  assert.equal(questions[0].answerField, "gabarito");
+  assert.equal(questions[0].answerSource, "print-page");
+  assert.equal(questions[1].answer, "Errado");
+  assert.equal(questions[2].answer, "D");
+  assert.equal(questions[2].answerSource, undefined);
+});
+
 test("biblioteca consolida partes sem duplicar questão", () => {
   const instance = library.createLibrary(storageStub());
   instance.appendPart(Object.assign({}, entry, { start: 1 }), entry.questions);

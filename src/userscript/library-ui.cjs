@@ -54,6 +54,7 @@
     documentNode.head.appendChild(style);
     style.textContent += "#tec-library-panel .completion-summary{margin:10px 0;border:1px solid #dbeafe;border-radius:9px;background:#fff;padding:10px}#tec-library-panel .completion-summary strong{display:block;margin-bottom:7px}#tec-library-panel .completion-summary ol{margin:0;padding-left:24px}#tec-library-panel .completion-summary li{padding:3px 0;color:#334155}#tec-library-panel .completion-summary li.completed{color:#047857}#tec-library-panel .completion-summary li.failed{color:#b91c1c}#tec-library-panel .completion-summary li.active{color:#1d4ed8}";
     style.textContent += "#tec-library-launcher-wrap{position:fixed;left:18px;bottom:18px;z-index:2147483646;display:flex;align-items:stretch;gap:6px}#tec-library-launcher{position:static;left:auto;bottom:auto}#tec-library-pause{border:0;border-radius:999px;background:#b91c1c;color:#fff;padding:0 13px;font:700 13px system-ui;box-shadow:0 8px 22px #7f1d1d55;cursor:pointer;white-space:nowrap}#tec-library-pause:hover{background:#991b1b}#tec-library-pause:disabled{background:#94a3b8;box-shadow:none;cursor:not-allowed;opacity:.85}";
+    style.textContent += "#tec-library-print-card{display:flex;align-items:center;gap:10px;min-width:0;padding:0;border:1px solid transparent;border-radius:14px;background:transparent;box-shadow:none;transition:padding .5s cubic-bezier(.22,1,.36,1),background .5s ease,box-shadow .5s ease,border-color .5s ease}#tec-library-launcher-wrap.print-mode{gap:0}#tec-library-launcher-wrap.print-mode #tec-library-print-card{padding:9px 12px;background:linear-gradient(135deg,#111827,#1e3a8a);box-shadow:0 12px 32px rgba(15,23,42,.5);border-color:rgba(255,255,255,.14)}#tec-library-launcher{transition:max-width .5s cubic-bezier(.22,1,.36,1),opacity .35s ease,transform .5s cubic-bezier(.22,1,.36,1),padding .5s cubic-bezier(.22,1,.36,1)}#tec-library-launcher-wrap.print-mode #tec-library-launcher{max-width:0;overflow:hidden;padding:0;border:0;opacity:0;transform:translateX(-12px) scale(.88);pointer-events:none}#tec-library-print-card .card-info{display:flex;flex-direction:column;gap:3px;min-width:0;max-width:0;overflow:hidden;white-space:nowrap;opacity:0;transform:translateX(-14px);transition:max-width .5s cubic-bezier(.22,1,.36,1),opacity .35s ease,transform .5s cubic-bezier(.22,1,.36,1)}#tec-library-launcher-wrap.print-mode #tec-library-print-card .card-info{max-width:320px;opacity:1;transform:translateX(0)}#tec-library-print-card .card-label{font:700 10px system-ui;letter-spacing:.14em;text-transform:uppercase;color:#93c5fd;opacity:0;transform:translateY(6px);transition:opacity .3s ease .1s,transform .45s cubic-bezier(.22,1,.36,1) .1s}#tec-library-print-card .card-title{font:700 13px system-ui;color:#f9fafb;text-overflow:ellipsis;overflow:hidden;opacity:0;transform:translateY(6px);transition:opacity .3s ease .18s,transform .45s cubic-bezier(.22,1,.36,1) .18s}#tec-library-print-card .card-meta{display:flex;align-items:center;gap:8px;opacity:0;transform:translateY(6px);transition:opacity .3s ease .26s,transform .45s cubic-bezier(.22,1,.36,1) .26s}#tec-library-print-card .card-parts{font:600 11px system-ui;color:#cbd5e1}#tec-library-print-card .card-remaining{font:700 11px system-ui;color:#fbbf24;background:#78350f66;border:1px solid #fbbf2444;border-radius:999px;padding:1px 8px}#tec-library-print-card .card-bar{height:3px;border-radius:999px;background:#1f2937;overflow:hidden;opacity:0;transition:opacity .3s ease .34s}#tec-library-print-card .card-bar i{display:block;height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,#059669,#3b82f6);transition:width .6s cubic-bezier(.22,1,.36,1)}#tec-library-launcher-wrap.print-mode #tec-library-print-card .card-label,#tec-library-launcher-wrap.print-mode #tec-library-print-card .card-title,#tec-library-launcher-wrap.print-mode #tec-library-print-card .card-meta,#tec-library-launcher-wrap.print-mode #tec-library-print-card .card-bar{opacity:1;transform:translateY(0)}";
 
     var launcher = button(documentNode, "", "");
     launcher.id = "tec-library-launcher";
@@ -69,10 +70,38 @@
     launcherPause.id = "tec-library-pause";
     launcherPause.dataset.tecScraperVersion = "2.5.18";
     launcherPause.setAttribute("aria-label", "Parar automação");
+    var printCard = documentNode.createElement("div");
+    printCard.id = "tec-library-print-card";
+    var cardInfo = documentNode.createElement("div");
+    cardInfo.className = "card-info";
+    var cardLabel = documentNode.createElement("span");
+    cardLabel.className = "card-label";
+    cardLabel.textContent = "Imprimindo caderno";
+    var cardTitle = documentNode.createElement("span");
+    cardTitle.className = "card-title";
+    cardTitle.textContent = "Caderno";
+    var cardMeta = documentNode.createElement("span");
+    cardMeta.className = "card-meta";
+    var cardParts = documentNode.createElement("span");
+    cardParts.className = "card-parts";
+    var cardRemaining = documentNode.createElement("span");
+    cardRemaining.className = "card-remaining";
+    cardMeta.appendChild(cardParts);
+    cardMeta.appendChild(cardRemaining);
+    var cardBar = documentNode.createElement("span");
+    cardBar.className = "card-bar";
+    var cardBarFill = documentNode.createElement("i");
+    cardBar.appendChild(cardBarFill);
+    cardInfo.appendChild(cardLabel);
+    cardInfo.appendChild(cardTitle);
+    cardInfo.appendChild(cardMeta);
+    cardInfo.appendChild(cardBar);
+    printCard.appendChild(cardInfo);
+    printCard.appendChild(launcherPause);
     var launcherWrap = documentNode.createElement("div");
     launcherWrap.id = "tec-library-launcher-wrap";
     launcherWrap.appendChild(launcher);
-    launcherWrap.appendChild(launcherPause);
+    launcherWrap.appendChild(printCard);
     var panel = documentNode.createElement("section");
     panel.id = "tec-library-panel";
     panel.dataset.tecScraperVersion = "2.5.18";
@@ -177,6 +206,20 @@
       node.appendChild(list);
     }
 
+    function updatePrintCard(progress) {
+      var printMode = Boolean(progress && progress.running && Number(progress.rangesTotal) > 0 && progress.rangeIndex != null);
+      launcherWrap.classList.toggle("print-mode", printMode);
+      if (!printMode) return;
+      var total = Math.max(1, Number(progress.rangesTotal) || 1);
+      var index = Math.max(0, Number(progress.rangeIndex) || 0);
+      var remaining = Math.max(0, total - index - 1);
+      cardTitle.textContent = String(progress.matterTitle || "Caderno");
+      cardTitle.title = String(progress.matterTitle || "");
+      cardParts.textContent = "Parte " + String(index + 1) + " de " + total;
+      cardRemaining.textContent = remaining <= 0 ? "última parte" : remaining === 1 ? "falta 1 parte" : "faltam " + remaining + " partes";
+      cardBarFill.style.width = Math.min(100, Math.round((index / total) * 100)) + "%";
+    }
+
     function refreshProgress(includeSummary) {
       var progress = progressSnapshot();
       var label = progressLabel(progress);
@@ -184,6 +227,7 @@
       launcher.title = progressDetails(progress);
       launcherPause.disabled = !progress.running;
       launcherPause.title = progress.running ? "Parar a automação agora. " + progressDetails(progress) : "A automação não está em execução.";
+      updatePrintCard(progress);
       var progressNode = body.querySelector("#tec-progress");
       if (progressNode) {
         progressNode.textContent = progressDetails(progress);

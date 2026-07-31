@@ -1,13 +1,18 @@
 (function (root, factory) {
-  var api = factory();
+  var api = factory(
+    typeof module !== "undefined" && module.exports
+      ? { gabarito: require("./gabarito.cjs") }
+      : { gabarito: root.TecConcursosModules.gabarito }
+  );
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root) {
     root.TecConcursosModules = root.TecConcursosModules || {};
     root.TecConcursosModules.library = api;
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (deps) {
   "use strict";
 
+  var gabaritoModule = deps && deps.gabarito;
   var LIBRARY_KEY = "tecconcursos_export_library_v1";
 
   function clean(value) {
@@ -145,9 +150,28 @@
     };
   }
 
+  function applyGabaritoBlock(questions, documentNode) {
+    if (!questions.length || !gabaritoModule || typeof gabaritoModule.parseGabaritoDocument !== "function") return questions;
+    var entries = gabaritoModule.parseGabaritoDocument(documentNode);
+    if (!entries.length) return questions;
+    var byNumber = {};
+    entries.forEach(function (entry) {
+      if (entry.index > 0 && entry.answer) byNumber[entry.index] = String(entry.answer).trim();
+    });
+    return questions.map(function (question) {
+      var answer = question.answer || byNumber[Number(question.number)];
+      if (!answer || answer === question.answer) return question;
+      return Object.assign({}, question, {
+        answer: answer,
+        answerField: "gabarito",
+        answerSource: "print-page"
+      });
+    });
+  }
+
   function extractPrintedQuestions(documentNode) {
     if (!documentNode || typeof documentNode.querySelectorAll !== "function") return [];
-    return Array.from(documentNode.querySelectorAll(".questao")).map(parsePrintedQuestion);
+    return applyGabaritoBlock(Array.from(documentNode.querySelectorAll(".questao")).map(parsePrintedQuestion), documentNode);
   }
 
   function yieldToBrowser(documentNode) {
@@ -176,7 +200,7 @@
         pauseCheck();
       }
     }
-    return questions;
+    return applyGabaritoBlock(questions, documentNode);
   }
 
   function cadernoIdFromLocation(locationLike) {
@@ -270,7 +294,7 @@
         question.number || index + 1, entry.title, entry.code, question.bank, question.year,
         question.vacancy, question.organization, question.role, question.subject, question.topic,
         question.id, question.url, question.statement, alternatives.A, alternatives.B,
-        alternatives.C, alternatives.D, alternatives.E, question.answer
+        alternatives.C, alternatives.D, alternatives.E, question.answer || question.gabarito
       ].map(csvValue).join(";"));
     });
     return "\uFEFF" + lines.join("\r\n");
@@ -326,7 +350,7 @@
     (entry.questions || []).forEach(function (question, index) {
       var alternatives = {};
       (question.options || []).forEach(function (option) { alternatives[option.letter] = option.text; });
-      var row = [question.number || index + 1, entry.title, entry.code, question.bank, question.year, question.vacancy, question.organization, question.role, question.subject, question.topic, question.id, question.url, question.statement, alternatives.A, alternatives.B, alternatives.C, alternatives.D, alternatives.E, question.answer];
+      var row = [question.number || index + 1, entry.title, entry.code, question.bank, question.year, question.vacancy, question.organization, question.role, question.subject, question.topic, question.id, question.url, question.statement, alternatives.A, alternatives.B, alternatives.C, alternatives.D, alternatives.E, question.answer || question.gabarito];
       (questionImages && questionImages[index] || []).forEach(function (source) {
         row.push(imageAssets && imageAssets.has(source) ? "[imagem incorporada]" : source);
       });

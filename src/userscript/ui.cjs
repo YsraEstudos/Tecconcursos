@@ -69,13 +69,17 @@
     var stop = button(documentNode, "⏸ Pausar", "tec-scraper-stop");
     var text = button(documentNode, "TXT", "tec-scraper-export-txt");
     var json = button(documentNode, "JSON", "tec-scraper-export-json");
+    var html = button(documentNode, "HTML", "tec-scraper-export-html");
+    var excel = button(documentNode, "Excel", "tec-scraper-export-excel");
     var clear = button(documentNode, "Limpar", "tec-scraper-clear");
     start.style.background = "#059669";
     stop.style.background = "#dc2626";
     text.style.background = "#2563eb";
     json.style.background = "#4f46e5";
+    html.style.background = "#0891b2";
+    excel.style.background = "#65a30d";
     clear.style.background = "#4b5563";
-    [start, stop, text, json, clear].forEach(function (item) { row.appendChild(item); });
+    [start, stop, text, json, html, excel, clear].forEach(function (item) { row.appendChild(item); });
     panel.appendChild(row);
     documentNode.body.appendChild(panel);
 
@@ -104,6 +108,12 @@
     });
     json.addEventListener("click", function () {
       if (typeof config.onExportJson === "function") config.onExportJson();
+    });
+    html.addEventListener("click", function () {
+      if (typeof config.onExportHtml === "function") config.onExportHtml();
+    });
+    excel.addEventListener("click", function () {
+      if (typeof config.onExportExcel === "function") config.onExportExcel();
     });
     clear.addEventListener("click", function () {
       if (typeof config.onClear === "function") config.onClear();

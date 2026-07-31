@@ -37,6 +37,7 @@
         storage: storage,
         parser: modules.parseQuestion,
         api: modules.api,
+        gabarito: modules.gabarito,
         apiOptions: { retryCount: 3, retryDelayMs: 1000 },
         navigation: modules.navigation,
         format: modules.format,
@@ -74,6 +75,21 @@
         onExportJson: function () {
           var count = collector.exportJson(documentNode);
           ui.setStatus(count + " questão(ões) exportada(s) para JSON.", false);
+        },
+        onExportHtml: function () {
+          try {
+            var count = collector.exportHtml(documentNode, { library: modules.library });
+            ui.setStatus(count ? count + " questão(ões) exportada(s) para HTML interativo." : "Nenhuma questão salva para exportar.", false);
+          } catch (error) {
+            ui.setStatus("Falha ao exportar HTML: " + String(error && error.message || error), true);
+          }
+        },
+        onExportExcel: function () {
+          Promise.resolve(collector.exportExcel(documentNode, { library: modules.library })).then(function (count) {
+            ui.setStatus(count ? count + " questão(ões) exportada(s) para Excel." : "Nenhuma questão salva para exportar.", false);
+          }).catch(function (error) {
+            ui.setStatus("Falha ao exportar Excel: " + String(error && error.message || error), true);
+          });
         },
         onClear: function () {
           if (!root.confirm || root.confirm("Limpar as questões salvas?")) {

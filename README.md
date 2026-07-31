@@ -11,7 +11,7 @@ Link de instalação/atualização:
 
 https://raw.githubusercontent.com/YsraEstudos/Tecconcursos/main/tecconcursos-scraper.user.js
 
-Na página de um caderno, o painel original permite iniciar, pausar, exportar TXT/JSON e limpar os dados. Enquanto uma automação de cadernos estiver pendente, o menu de comandos do próprio userscript no popup do Tampermonkey também mostra **Parar automação** ou **Retomar automação**, preservando o ponto salvo quando a página estiver navegando. Os cliques da coleta usam intervalo aleatório entre 6 e 10 segundos; a automação de cadernos também aguarda antes das ações de filtros, criação e impressão. Pressionar **ESC** para as automações ativas. O gabarito é lido do campo oficial `numeroAlternativaCorreta` retornado pela API da própria sessão do Tec Concursos. O campo `status` não é tratado como resposta. Questões antigas que tinham respostas inferidas incorretamente de `status` são limpas e podem ser reprocessadas.
+Na página de um caderno, o painel original permite iniciar, pausar, exportar TXT/JSON/HTML/Excel e limpar os dados. Enquanto uma automação de cadernos estiver pendente, o menu de comandos do próprio userscript no popup do Tampermonkey também mostra **Parar automação** ou **Retomar automação**, preservando o ponto salvo quando a página estiver navegando. Os cliques da coleta usam intervalo aleatório entre 6 e 10 segundos; a automação de cadernos também aguarda antes das ações de filtros, criação e impressão. Pressionar **ESC** para as automações ativas. O gabarito é lido do campo oficial `numeroAlternativaCorreta` retornado pela API da própria sessão do Tec Concursos. O campo `status` não é tratado como resposta. Questões antigas que tinham respostas inferidas incorretamente de `status` são limpas e podem ser reprocessadas. Ao chegar ao fim do caderno (última questão), o coletor busca a página de impressão (`/questoes/cadernos/{id}/imprimir`) e aplica o bloco oficial `#gabarito` às questões que ficaram sem resposta, incluindo respostas `Certo`/`Errado`; se a página não exibir o bloco, tenta a variante com `questaoInicial` e `numeroQuestoes`. As exportações HTML (interativo, com feedback de acerto/erro) e Excel (coluna Gabarito) levam essas respostas. A extração da biblioteca na página de impressão também lê o bloco `#gabarito` do final da página e preenche a resposta de cada questão pelo seu número.
 
 ## Biblioteca e exportação de cadernos
 
@@ -51,7 +51,7 @@ npm run extract-cookies
 ## Estrutura
 
 - src/shared/answer.cjs — conversão única de status da API para A/B/C/D/E.
-- src/userscript — módulos do bundle do Tampermonkey.
+- src/userscript — módulos do bundle do Tampermonkey (inclui gabarito.cjs, que lê o bloco `#gabarito` da página de impressão).
 - src/cli — scraper de terminal e configuração.
 - scripts — build do userscript, testes e extração de cookies.
 - dist — cópia gerada do userscript.

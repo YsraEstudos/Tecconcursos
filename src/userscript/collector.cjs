@@ -4,6 +4,8 @@
       selectors: require("./selectors.cjs"),
       parser: require("./parse-question.cjs"),
       api: require("./api.cjs"),
+      gabarito: require("./gabarito.cjs"),
+      library: require("./library.cjs"),
       navigation: require("./navigation.cjs"),
       format: require("./format.cjs"),
       timing: require("./timing.cjs")
@@ -23,6 +25,8 @@
     var storage = config.storage;
     var parser = config.parser;
     var questionApi = config.api || deps.api;
+    var gabarito = config.gabarito || deps.gabarito;
+    var libraryModule = config.library || deps.library;
     var navigation = config.navigation;
     var format = config.format;
     var timing = config.timing;
@@ -119,6 +123,30 @@
       };
     }
 
+    async function applyOfficialGabarito(onStatus) {
+      if (!gabarito || typeof gabarito.fetchCadernoGabarito !== "function" || typeof gabarito.applyToQuestions !== "function") return;
+      var questions = readQuestions();
+      if (!questions.length) return;
+      if (questions.every(function (item) { return item.gabarito; })) return;
+      var lastIndex = 0;
+      questions.forEach(function (item) {
+        lastIndex = Math.max(lastIndex, Number(item.cadernoIndex) || 0);
+      });
+      try {
+        onStatus("Coletando o gabarito oficial do caderno no final das questões...");
+        var entries = await gabarito.fetchCadernoGabarito(documentNode, Object.assign({}, apiOptions, { count: lastIndex }));
+        var result = gabarito.applyToQuestions(readQuestions(), entries);
+        if (result.applied > 0) {
+          writeQuestions(result.questions);
+          onStatus("Gabarito oficial aplicado a " + result.applied + " questão(ões) que estavam sem resposta.");
+        } else {
+          onStatus("Gabarito oficial verificado: nenhuma questão precisava de resposta.");
+        }
+      } catch (error) {
+        onStatus("Não foi possível coletar o gabarito oficial: " + String(error && error.message || error));
+      }
+    }
+
     async function start(settings) {
       if (running) return { stopped: false, reason: "already-running", count: readQuestions().length };
       var runSettings = settings || {};
@@ -127,6 +155,7 @@
       runToken = token;
       running = true;
       var addedThisRun = 0;
+      var endReached = false;
       var status = typeof runSettings.onStatus === "function" ? runSettings.onStatus : function () {};
       try {
         while (running && token === runToken) {
@@ -151,11 +180,14 @@
           }
           if (limit > 0 && addedThisRun >= limit) {
             status("Limite de " + limit + " questão(ões) nova(s) atingido.");
+            var lastButton = deps.selectors.findNextButton(documentNode);
+            endReached = !lastButton || lastButton.disabled;
             break;
           }
 
           var nextButton = deps.selectors.findNextButton(documentNode);
           if (!nextButton || nextButton.disabled) {
+            endReached = true;
             status("Fim do caderno ou botão 'Próxima questão' indisponível.");
             break;
           }
@@ -188,6 +220,9 @@
             status("A próxima questão não carregou no tempo esperado.");
             break;
           }
+        }
+        if (endReached) {
+          await applyOfficialGabarito(status);
         }
       } finally {
         running = false;
@@ -225,6 +260,57 @@
       return questions.length;
     }
 
+    function buildLibraryEntry(questions, options) {
+      var list = Array.isArray(questions) ? questions : [];
+      var config = options || {};
+      var entryLibrary = config.library || libraryModule;
+      var parseHeader = entryLibrary && typeof entryLibrary.parseHeader === "function" ? entryLibrary.parseHeader : null;
+      var cadernoId = config.cadernoId || (
+        questionApi && typeof questionApi.getCadernoId === "function" ? questionApi.getCadernoId(documentNode) : ""
+      );
+      return {
+        id: "coletor-" + (cadernoId || String(new Date().getTime())),
+        code: cadernoId || "",
+        title: cadernoId ? "Caderno #" + cadernoId : "Caderno coletado",
+        group: "Coletor de Questões",
+        questions: list.map(function (question) {
+          var header = parseHeader && question.header ? parseHeader(question.header) : {};
+          return Object.assign({}, question, {
+            bank: question.bank || header.bank || "",
+            year: question.year != null ? question.year : header.year,
+            vacancy: question.vacancy || header.vacancy || "",
+            organization: question.organization || header.organization || "",
+            role: question.role || header.role || "",
+            subject: question.subject || "",
+            topic: question.topic || "",
+            number: Number(question.cadernoIndex) || 0,
+            answer: question.answer || question.gabarito || ""
+          });
+        })
+      };
+    }
+
+    function exportHtml(documentForDownload, options) {
+      var questions = readQuestions();
+      if (!questions.length) return 0;
+      var entry = buildLibraryEntry(questions, options);
+      var entryLibrary = (options && options.library) || libraryModule;
+      if (!entryLibrary || typeof entryLibrary.buildInteractiveHtml !== "function" || typeof entryLibrary.downloadBlob !== "function") return 0;
+      entryLibrary.downloadBlob(documentForDownload, entryLibrary.outputBaseName(entry) + ".html", new Blob([entryLibrary.buildInteractiveHtml(entry)], { type: "text/html;charset=utf-8" }));
+      return questions.length;
+    }
+
+    async function exportExcel(documentForDownload, options) {
+      var questions = readQuestions();
+      if (!questions.length) return 0;
+      var entry = buildLibraryEntry(questions, options);
+      var entryLibrary = (options && options.library) || libraryModule;
+      if (!entryLibrary || typeof entryLibrary.buildXlsxBlob !== "function" || typeof entryLibrary.downloadBlob !== "function") return 0;
+      var blob = await entryLibrary.buildXlsxBlob(entry);
+      entryLibrary.downloadBlob(documentForDownload, entryLibrary.outputBaseName(entry) + ".xlsx", blob);
+      return questions.length;
+    }
+
     return {
       start: start,
       stop: stop,
@@ -233,7 +319,10 @@
       getQuestions: getQuestions,
       clear: clear,
       exportText: exportText,
-      exportJson: exportJson
+      exportJson: exportJson,
+      buildLibraryEntry: buildLibraryEntry,
+      exportHtml: exportHtml,
+      exportExcel: exportExcel
     };
   }
 
