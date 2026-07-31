@@ -93,7 +93,7 @@ test("HTML interativo salva resposta, duplo clique, filtros e histórico após r
   }
 });
 
-test("HTML interativo informa acerto e erro depois da resposta", { timeout: 60000 }, async () => {
+test("HTML interativo informa acerto e erro somente depois de clicar em Responder", { timeout: 60000 }, async () => {
   const feedbackEntry = Object.assign({}, entry, {
     id: "html-e2e-feedback",
     questions: [Object.assign({}, entry.questions[0], { answer: "B" })]
@@ -105,12 +105,23 @@ test("HTML interativo informa acerto e erro depois da resposta", { timeout: 6000
     await page.goto(fixture.url, { waitUntil: "domcontentloaded" });
     await page.locator(".option").nth(0).click();
     await page.waitForTimeout(300);
+    assert.match(await page.locator("#feedback").textContent(), /selecionada/i);
+    assert.doesNotMatch(await page.locator("#feedback").textContent(), /errou|acertou/i);
+    assert.doesNotMatch(await page.locator(".option").nth(0).getAttribute("class"), /incorrect/);
+    assert.equal(await page.locator("#respond").isEnabled(), true);
+
+    await page.locator("#respond").click();
     assert.match(await page.locator("#feedback").textContent(), /errou/i);
     assert.match(await page.locator(".option").nth(0).getAttribute("class"), /incorrect/);
     assert.match(await page.locator(".option").nth(1).getAttribute("class"), /correct/);
+    assert.equal(await page.locator("#respond").isDisabled(), true);
+    const confirmedState = await page.evaluate(() => JSON.parse(localStorage.getItem("tecconcursos-html-v1:html-e2e-feedback")));
+    assert.equal(confirmedState.attempts[0].confirmed["1"], true);
 
     await page.locator(".option").nth(1).click();
     await page.waitForTimeout(300);
+    assert.doesNotMatch(await page.locator("#feedback").textContent(), /acertou|errou/i);
+    await page.locator("#respond").click();
     assert.match(await page.locator("#feedback").textContent(), /acertou/i);
     assert.match(await page.locator(".option").nth(1).getAttribute("class"), /selected/);
     assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), "rgb(11, 17, 32)");

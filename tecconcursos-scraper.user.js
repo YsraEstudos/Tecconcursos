@@ -2284,35 +2284,50 @@
     var attempt = currentAttempt();
     var correctAnswer = answerLetter(question.answer || question.gabarito);
     var selectedAnswer = answerLetter(attempt.answers[question.id]);
+    var confirmed = !!(attempt.confirmed || {})[question.id];
     var meta = [question.bank, question.year, question.organization, question.role, question.vacancy, question.subject, question.topic].filter(Boolean).map(function (value) { return '<span class="tag">' + escapeValue(value) + "</span>"; }).join("");
     var body = question.statementHtml || ("<p>" + escapeValue(question.statement) + "</p>");
     var alternatives = (question.options || []).map(function (option) {
       var selected = selectedAnswer === option.letter;
-      var correct = !!correctAnswer && correctAnswer === option.letter;
-      var incorrect = selected && !!correctAnswer && selectedAnswer !== correctAnswer;
+      var correct = confirmed && !!correctAnswer && correctAnswer === option.letter;
+      var incorrect = confirmed && selected && !!correctAnswer && selectedAnswer !== correctAnswer;
       var eliminated = !!(attempt.eliminated[question.id] || {})[option.letter];
       return '<button class="option ' + (selected ? "selected " : "") + (correct ? "correct " : "") + (incorrect ? "incorrect " : "") + (eliminated ? "eliminated " : "") + '" aria-pressed="' + (selected ? "true" : "false") + '" data-letter="' + escapeValue(option.letter) + '">' + (option.html || ("<strong>" + escapeValue(option.letter) + ")</strong> " + escapeValue(option.text))) + "</button>";
     }).join("");
     var feedbackClass = "feedback";
-    var feedbackText = "Escolha uma alternativa para conferir o resultado.";
-    if (selectedAnswer && correctAnswer) {
+    var feedbackText = "Selecione uma alternativa e clique em Responder para confirmar.";
+    if (selectedAnswer && correctAnswer && confirmed) {
       feedbackClass += selectedAnswer === correctAnswer ? " correct" : " incorrect";
       feedbackText = selectedAnswer === correctAnswer
         ? "✓ Você acertou! A resposta correta é " + correctAnswer + "."
         : "✕ Você errou. Você marcou " + selectedAnswer + "; a resposta correta é " + correctAnswer + ".";
-    } else if (selectedAnswer) {
+    } else if (selectedAnswer && confirmed) {
       feedbackClass += " unavailable";
       feedbackText = "Resposta marcada, mas o gabarito desta questão não foi extraído.";
+    } else if (selectedAnswer) {
+      feedbackText = "Alternativa " + selectedAnswer + " selecionada. Clique em Responder para confirmar.";
     }
-    document.getElementById("question").innerHTML = '<div class="meta">' + meta + '</div><div class="statement">' + body + "</div><div>" + alternatives + '</div><div id="feedback" class="' + feedbackClass + '">' + escapeValue(feedbackText) + '</div><div class="hint">Clique para marcar uma resposta. Dê duplo clique para eliminar ou restaurar uma alternativa.</div>';
+    document.getElementById("question").innerHTML = '<div class="meta">' + meta + '</div><div class="statement">' + body + "</div><div>" + alternatives + '</div><div class="answer-row"><button id="respond"' + (selectedAnswer && !confirmed ? "" : " disabled") + '>Responder</button><div id="feedback" class="' + feedbackClass + '">' + escapeValue(feedbackText) + '</div></div><div class="hint">Clique para selecionar uma alternativa e depois em Responder para confirmar. Dê duplo clique para eliminar ou restaurar uma alternativa.</div>';
     document.getElementById("status").textContent = "Questão " + (index + 1) + " de " + visible.length;
     Array.from(document.querySelectorAll(".option")).forEach(function (button) {
       var clickTimer = null;
       button.addEventListener("click", function () {
         if (clickTimer) clearTimeout(clickTimer);
-        clickTimer = setTimeout(function () { attempt.answers[question.id] = button.dataset.letter; write(); render(); }, 220);
+        clickTimer = setTimeout(function () {
+          attempt.answers[question.id] = button.dataset.letter;
+          if (attempt.confirmed && attempt.confirmed[question.id] !== button.dataset.letter) delete attempt.confirmed[question.id];
+          write();
+          render();
+        }, 220);
       });
       button.addEventListener("dblclick", function (event) { event.preventDefault(); if (clickTimer) clearTimeout(clickTimer); attempt.eliminated[question.id] = attempt.eliminated[question.id] || {}; if (attempt.eliminated[question.id][button.dataset.letter]) delete attempt.eliminated[question.id][button.dataset.letter]; else attempt.eliminated[question.id][button.dataset.letter] = true; write(); render(); });
+    });
+    var respond = document.getElementById("respond");
+    if (respond) respond.addEventListener("click", function () {
+      attempt.confirmed = attempt.confirmed || {};
+      attempt.confirmed[question.id] = true;
+      write();
+      render();
     });
   }
   function resetIndex() { index = 0; render(); }
@@ -2351,7 +2366,7 @@
 })();`;
     return [
       "<!doctype html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>", escapeHtml(entry.title || "Caderno"),
-      "</title><style>body{margin:0;background:#f3f4f6;color:#182230;font:16px system-ui,-apple-system,Segoe UI,sans-serif}.top{position:sticky;top:0;z-index:2;background:#102a43;color:#fff;padding:14px 20px;box-shadow:0 2px 8px #0003}.top h1{font-size:18px;margin:0 0 7px}.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.controls button,.controls input,.controls select{border:1px solid #aab8c8;border-radius:7px;padding:7px 9px;font:inherit}.controls button{background:#fff;color:#102a43;cursor:pointer;font-weight:700}.summary{font-size:13px;opacity:.9}.main{max-width:900px;margin:24px auto;padding:0 16px}.card{background:#fff;border-radius:12px;box-shadow:0 3px 14px #0b1f3317;padding:22px}.meta{display:flex;gap:6px;flex-wrap:wrap;color:#52606d;font-size:14px;margin-bottom:14px}.tag{background:#e6f6ff;color:#075985;padding:4px 7px;border-radius:999px}.statement{line-height:1.6}.option{display:block;width:100%;text-align:left;margin:10px 0;padding:12px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font:inherit}.option:hover{border-color:#2563eb}.option.selected{border:2px solid #2563eb;background:#eff6ff}.option.eliminated{text-decoration:line-through;opacity:.45;background:#f8fafc}.hint{margin-top:12px;color:#64748b;font-size:13px}.status{margin-left:auto;font-size:13px}.empty{padding:30px;text-align:center;color:#64748b}</style></head><body><header class=\"top\"><h1 id=\"title\"></h1><div class=\"controls\"><button id=\"prev\">← Anterior</button><button id=\"next\">Próxima →</button><label>Ir para <input id=\"jump\" type=\"number\" min=\"1\" style=\"width:78px\"></label><button id=\"go\">Ir</button><label>Banca <select id=\"bank\"><option value=\"\">Todas</option></select></label><label>Ano <select id=\"year\"><option value=\"\">Todos</option></select></label><button id=\"newAttempt\">Nova tentativa</button><button id=\"saveHtml\">Baixar HTML com histórico</button><span class=\"status\" id=\"status\"></span></div><div class=\"summary\" id=\"summary\"></div></header><main class=\"main\"><article class=\"card\" id=\"question\"></article></main><script id=\"tec-caderno-data\" type=\"application/json\">", jsJson(data), "</script><script id=\"tec-caderno-state\" type=\"application/json\">", jsJson(initial), "</script><script>", runtime, "</script></body></html>"
+      "</title><style>body{margin:0;background:#f3f4f6;color:#182230;font:16px system-ui,-apple-system,Segoe UI,sans-serif}.top{position:sticky;top:0;z-index:2;background:#102a43;color:#fff;padding:14px 20px;box-shadow:0 2px 8px #0003}.top h1{font-size:18px;margin:0 0 7px}.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.controls button,.controls input,.controls select{border:1px solid #aab8c8;border-radius:7px;padding:7px 9px;font:inherit}.controls button{background:#fff;color:#102a43;cursor:pointer;font-weight:700}.summary{font-size:13px;opacity:.9}.main{max-width:900px;margin:24px auto;padding:0 16px}.card{background:#fff;border-radius:12px;box-shadow:0 3px 14px #0b1f3317;padding:22px}.meta{display:flex;gap:6px;flex-wrap:wrap;color:#52606d;font-size:14px;margin-bottom:14px}.tag{background:#e6f6ff;color:#075985;padding:4px 7px;border-radius:999px}.statement{line-height:1.6}.option{display:block;width:100%;text-align:left;margin:10px 0;padding:12px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font:inherit}.option:hover{border-color:#2563eb}.option.selected{border:2px solid #2563eb;background:#eff6ff}.option.eliminated{text-decoration:line-through;opacity:.45;background:#f8fafc}.answer-row{display:flex;align-items:center;gap:12px;margin-top:14px}.answer-row #feedback{margin:0;flex:1}#respond{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:11px 18px;font:700 14px system-ui;cursor:pointer;white-space:nowrap}#respond:hover:not(:disabled){background:#1d4ed8}#respond:disabled{background:#9ca3af;cursor:not-allowed}.hint{margin-top:12px;color:#64748b;font-size:13px}.status{margin-left:auto;font-size:13px}.empty{padding:30px;text-align:center;color:#64748b}</style></head><body><header class=\"top\"><h1 id=\"title\"></h1><div class=\"controls\"><button id=\"prev\">← Anterior</button><button id=\"next\">Próxima →</button><label>Ir para <input id=\"jump\" type=\"number\" min=\"1\" style=\"width:78px\"></label><button id=\"go\">Ir</button><label>Banca <select id=\"bank\"><option value=\"\">Todas</option></select></label><label>Ano <select id=\"year\"><option value=\"\">Todos</option></select></label><button id=\"newAttempt\">Nova tentativa</button><button id=\"saveHtml\">Baixar HTML com histórico</button><span class=\"status\" id=\"status\"></span></div><div class=\"summary\" id=\"summary\"></div></header><main class=\"main\"><article class=\"card\" id=\"question\"></article></main><script id=\"tec-caderno-data\" type=\"application/json\">", jsJson(data), "</script><script id=\"tec-caderno-state\" type=\"application/json\">", jsJson(initial), "</script><script>", runtime, "</script></body></html>"
     ].join("");
   }
 
