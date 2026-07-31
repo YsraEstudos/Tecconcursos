@@ -63,6 +63,7 @@ test("HTML interativo salva resposta, duplo clique, filtros e histórico após r
     await reopened.goto(fixture.url, { waitUntil: "domcontentloaded" });
     assert.match(await reopened.locator(".option").nth(0).getAttribute("class"), /selected/);
     assert.match(await reopened.locator(".option").nth(1).getAttribute("class"), /eliminated/);
+    assert.equal(await reopened.locator(".option").nth(1).evaluate(node => getComputedStyle(node).opacity), "0.3");
     assert.match(await reopened.locator("#status").textContent(), /Questão 1 de 3/);
     await reopened.locator("#jump").fill("3");
     await reopened.locator("#go").click();
