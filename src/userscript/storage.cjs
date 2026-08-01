@@ -80,7 +80,24 @@
       }
     }
 
-    return { read: read, write: write, remove: remove };
+    function list() {
+      if (typeof runtime.GM_listValues === "function") {
+        try {
+          return runtime.GM_listValues();
+        } catch (_) {}
+      }
+      var keys = [];
+      try {
+        if (local && local.length) {
+          for (var index = 0; index < local.length; index += 1) {
+            keys.push(local.key(index));
+          }
+        }
+      } catch (_) {}
+      return keys;
+    }
+
+    return { read: read, write: write, remove: remove, list: list };
   }
 
   return { createStorage: createStorage };

@@ -8,7 +8,7 @@ const { chromium } = require("playwright");
 const projectRoot = path.resolve(__dirname, "../..");
 const bundle = fs.readFileSync(path.join(projectRoot, "tecconcursos-scraper.user.js"), "utf8");
 const stateKey = "tecconcursos_caderno_automation_v1";
-const libraryKey = "tecconcursos_export_library_v1";
+const libraryKey = "tecconcursos_export_library_index_v1";
 const libraryEntryPrefix = "tecconcursos_export_library_entry_v1:";
 const planKey = "tecconcursos_caderno_plan_v1";
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      2.7.1
+// @version      2.7.2
 // @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.
 // @author       Codex
 // @match        https://www.tecconcursos.com.br/*
@@ -18,6 +18,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_listValues
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
 // @grant        GM_addElement
@@ -887,7 +888,24 @@
       }
     }
 
-    return { read: read, write: write, remove: remove };
+    function list() {
+      if (typeof runtime.GM_listValues === "function") {
+        try {
+          return runtime.GM_listValues();
+        } catch (_) {}
+      }
+      var keys = [];
+      try {
+        if (local && local.length) {
+          for (var index = 0; index < local.length; index += 1) {
+            keys.push(local.key(index));
+          }
+        }
+      } catch (_) {}
+      return keys;
+    }
+
+    return { read: read, write: write, remove: remove, list: list };
   }
 
   return { createStorage: createStorage };
@@ -1743,7 +1761,9 @@
   "use strict";
 
   var gabaritoModule = deps && deps.gabarito;
-  var LIBRARY_KEY = "tecconcursos_export_library_v1";
+  var LEGACY_KEY = "tecconcursos_export_library_v1";
+  var INDEX_KEY = "tecconcursos_export_library_index_v1";
+  var LEGACY_CLEANUP_KEY = "tecconcursos_export_library_legacy_cleanup_v1";
   var LIBRARY_ENTRY_PREFIX = "tecconcursos_export_library_entry_v1:";
 
   function entryStorageKey(id) {
@@ -1989,11 +2009,12 @@
   }
 
   function createLibrary(storage) {
+    ensureLegacyCleanup();
     function readIndex() {
-      return normalizeLibrary(storage.read(LIBRARY_KEY, emptyLibrary()));
+      return normalizeLibrary(storage.read(INDEX_KEY, emptyLibrary()));
     }
     function writeIndex(library) {
-      storage.write(LIBRARY_KEY, library);
+      storage.write(INDEX_KEY, library);
     }
     function readEntry(id) {
       var value = storage.read(entryStorageKey(id), null);
@@ -2007,23 +2028,56 @@
       else storage.write(entryStorageKey(id), null);
     }
     function migrateLegacy(library) {
-      var touched = false;
+      var allMoved = true;
+      var meta = {};
       Object.keys(library.entries).forEach(function (key) {
         var entry = library.entries[key];
         if (entry && Array.isArray(entry.questions)) {
+          var moved = false;
           try {
-            if (writeEntry(key, entry)) {
-              library.entries[key] = entryMetadata(entry);
-              touched = true;
-            }
+            moved = writeEntry(key, entry);
           } catch (_) {}
+          meta[key] = moved ? entryMetadata(entry) : entry;
+          if (!moved) allMoved = false;
+        } else if (entry) {
+          meta[key] = entry;
         }
       });
-      if (touched) writeIndex(library);
-      return library;
+      library.entries = meta;
+      return allMoved;
+    }
+    var legacyCleanupDone = false;
+    function ensureLegacyCleanup() {
+      if (legacyCleanupDone) return;
+      legacyCleanupDone = true;
+      if (storage.read(LEGACY_CLEANUP_KEY, false)) return;
+      var exists = true;
+      try {
+        var keys = typeof storage.list === "function" ? storage.list() : null;
+        if (keys) exists = keys.indexOf(LEGACY_KEY) !== -1;
+      } catch (_) {}
+      if (exists) {
+        var migrated = false;
+        var readable = false;
+        try {
+          var raw = storage.read(LEGACY_KEY, null);
+          if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+            readable = true;
+            var library = normalizeLibrary(raw);
+            migrated = migrateLegacy(library);
+            writeIndex(library);
+          }
+        } catch (_) {}
+        if (migrated || !readable) {
+          try {
+            if (typeof storage.remove === "function") storage.remove(LEGACY_KEY);
+          } catch (_) {}
+        }
+      }
+      storage.write(LEGACY_CLEANUP_KEY, true);
     }
     function read() {
-      return migrateLegacy(normalizeLibrary(storage.read(LIBRARY_KEY, emptyLibrary())));
+      return readIndex();
     }
     function list() {
       var entries = read().entries;
@@ -2483,7 +2537,9 @@
   }
 
   return {
-    LIBRARY_KEY: LIBRARY_KEY,
+    LEGACY_KEY: LEGACY_KEY,
+    INDEX_KEY: INDEX_KEY,
+    LEGACY_CLEANUP_KEY: LEGACY_CLEANUP_KEY,
     LIBRARY_ENTRY_PREFIX: LIBRARY_ENTRY_PREFIX,
     stripDataUriImages: stripDataUriImages,
     slimEntryForStorage: slimEntryForStorage,
@@ -4827,7 +4883,7 @@
     launcher.appendChild(launcherStatus);
     var launcherPause = button(documentNode, "⏹ Parar", "");
     launcherPause.id = "tec-library-pause";
-    launcherPause.dataset.tecScraperVersion = "2.5.18";
+    launcherPause.dataset.tecScraperVersion = "2.7.2";
     launcherPause.setAttribute("aria-label", "Parar automação");
     var printCard = documentNode.createElement("div");
     printCard.id = "tec-library-print-card";
@@ -4863,9 +4919,9 @@
     launcherWrap.appendChild(printCard);
     var panel = documentNode.createElement("section");
     panel.id = "tec-library-panel";
-    panel.dataset.tecScraperVersion = "2.5.18";
-    launcher.dataset.tecScraperVersion = "2.5.18";
-    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.5.18</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
+    panel.dataset.tecScraperVersion = "2.7.2";
+    launcher.dataset.tecScraperVersion = "2.7.2";
+    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.7.2</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
     documentNode.body.appendChild(launcherWrap);
     documentNode.body.appendChild(panel);
     var body = panel.querySelector(".body");

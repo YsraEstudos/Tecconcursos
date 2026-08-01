@@ -10,7 +10,7 @@ const metadata = [
   "// ==UserScript==",
   "// @name         TecConcursos - Coletor de Questões Pro",
   "// @namespace    https://github.com/YsraEstudos/Tecconcursos",
-  "// @version      2.7.1",
+  "// @version      2.7.2",
   "// @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.",
   "// @author       Codex",
   "// @match        https://www.tecconcursos.com.br/*",
@@ -27,6 +27,7 @@ const metadata = [
   "// @grant        GM_getValue",
   "// @grant        GM_setValue",
   "// @grant        GM_deleteValue",
+  "// @grant        GM_listValues",
   "// @grant        GM_registerMenuCommand",
   "// @grant        GM_unregisterMenuCommand",
   "// @grant        GM_addElement",
@@ -77,6 +78,10 @@ const modules = moduleOrder.map(({ dir, name }) => {
     const contextPath = path.join(sourceDir, "AI_CONTEXT.md");
     const context = fs.readFileSync(contextPath, "utf8");
     source = source.replace('"__TEC_AI_CONTEXT__"', JSON.stringify(context));
+  }
+  if (name === "library-ui.cjs") {
+    const versionMatch = metadata.match(/\/\/ @version\s+([0-9.]+)/);
+    if (versionMatch) source = source.replace(/2\.7\.2/g, versionMatch[1]);
   }
   return "// ---- " + name + " ----\n" + source.trim();
 });

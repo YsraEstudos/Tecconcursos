@@ -13,7 +13,9 @@
   "use strict";
 
   var gabaritoModule = deps && deps.gabarito;
-  var LIBRARY_KEY = "tecconcursos_export_library_v1";
+  var LEGACY_KEY = "tecconcursos_export_library_v1";
+  var INDEX_KEY = "tecconcursos_export_library_index_v1";
+  var LEGACY_CLEANUP_KEY = "tecconcursos_export_library_legacy_cleanup_v1";
   var LIBRARY_ENTRY_PREFIX = "tecconcursos_export_library_entry_v1:";
 
   function entryStorageKey(id) {
@@ -259,11 +261,12 @@
   }
 
   function createLibrary(storage) {
+    ensureLegacyCleanup();
     function readIndex() {
-      return normalizeLibrary(storage.read(LIBRARY_KEY, emptyLibrary()));
+      return normalizeLibrary(storage.read(INDEX_KEY, emptyLibrary()));
     }
     function writeIndex(library) {
-      storage.write(LIBRARY_KEY, library);
+      storage.write(INDEX_KEY, library);
     }
     function readEntry(id) {
       var value = storage.read(entryStorageKey(id), null);
@@ -277,23 +280,56 @@
       else storage.write(entryStorageKey(id), null);
     }
     function migrateLegacy(library) {
-      var touched = false;
+      var allMoved = true;
+      var meta = {};
       Object.keys(library.entries).forEach(function (key) {
         var entry = library.entries[key];
         if (entry && Array.isArray(entry.questions)) {
+          var moved = false;
           try {
-            if (writeEntry(key, entry)) {
-              library.entries[key] = entryMetadata(entry);
-              touched = true;
-            }
+            moved = writeEntry(key, entry);
           } catch (_) {}
+          meta[key] = moved ? entryMetadata(entry) : entry;
+          if (!moved) allMoved = false;
+        } else if (entry) {
+          meta[key] = entry;
         }
       });
-      if (touched) writeIndex(library);
-      return library;
+      library.entries = meta;
+      return allMoved;
+    }
+    var legacyCleanupDone = false;
+    function ensureLegacyCleanup() {
+      if (legacyCleanupDone) return;
+      legacyCleanupDone = true;
+      if (storage.read(LEGACY_CLEANUP_KEY, false)) return;
+      var exists = true;
+      try {
+        var keys = typeof storage.list === "function" ? storage.list() : null;
+        if (keys) exists = keys.indexOf(LEGACY_KEY) !== -1;
+      } catch (_) {}
+      if (exists) {
+        var migrated = false;
+        var readable = false;
+        try {
+          var raw = storage.read(LEGACY_KEY, null);
+          if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+            readable = true;
+            var library = normalizeLibrary(raw);
+            migrated = migrateLegacy(library);
+            writeIndex(library);
+          }
+        } catch (_) {}
+        if (migrated || !readable) {
+          try {
+            if (typeof storage.remove === "function") storage.remove(LEGACY_KEY);
+          } catch (_) {}
+        }
+      }
+      storage.write(LEGACY_CLEANUP_KEY, true);
     }
     function read() {
-      return migrateLegacy(normalizeLibrary(storage.read(LIBRARY_KEY, emptyLibrary())));
+      return readIndex();
     }
     function list() {
       var entries = read().entries;
@@ -753,7 +789,9 @@
   }
 
   return {
-    LIBRARY_KEY: LIBRARY_KEY,
+    LEGACY_KEY: LEGACY_KEY,
+    INDEX_KEY: INDEX_KEY,
+    LEGACY_CLEANUP_KEY: LEGACY_CLEANUP_KEY,
     LIBRARY_ENTRY_PREFIX: LIBRARY_ENTRY_PREFIX,
     stripDataUriImages: stripDataUriImages,
     slimEntryForStorage: slimEntryForStorage,
