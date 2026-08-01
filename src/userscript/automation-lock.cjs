@@ -13,7 +13,7 @@
   var SYNC_CHANNEL_NAME = "tecconcursos_caderno_automation_sync_v1";
   var COMMAND_KEY = "tecconcursos_caderno_automation_command_v1";
   var LOCK_LEASE_MS = 30000;
-  var LOCK_HEARTBEAT_MS = 5000;
+  var LOCK_HEARTBEAT_MS = 10000;
 
   function clean(value) {
     return String(value == null ? "" : value).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();

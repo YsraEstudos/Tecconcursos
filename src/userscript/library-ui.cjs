@@ -115,6 +115,7 @@
     var progressTimerMs = 0;
     var refreshFrame = null;
     var refreshIncludesSummary = false;
+    var lastProgressSignature = null;
 
     function progressSnapshot() {
       return typeof config.getProgress === "function" ? (config.getProgress() || {}) : {};
@@ -161,7 +162,7 @@
 
     function updateProgressTimer(progress) {
       var isOpen = panel.classList.contains("open");
-      var desiredInterval = isOpen ? 1000 : progress.running ? 2000 : 0;
+      var desiredInterval = isOpen ? 2000 : progress.running ? 5000 : 0;
       if (!desiredInterval) {
         if (progressTimer != null) clearInterval(progressTimer);
         progressTimer = null;
@@ -220,8 +221,24 @@
       cardBarFill.style.width = Math.min(100, Math.round((index / total) * 100)) + "%";
     }
 
+    function progressSignature(progress) {
+      return [
+        progress.running, progress.phase, progress.stale, progress.lockedByOtherTab,
+        progress.message, progress.updatedAt,
+        progress.matterIndex, progress.mattersTotal,
+        progress.rangeIndex, progress.rangesTotal,
+        progress.matterTitle, progress.matterCode
+      ].map(function (value) { return String(value == null ? "" : value); }).join("|");
+    }
+
     function refreshProgress(includeSummary) {
       var progress = progressSnapshot();
+      var signature = progressSignature(progress);
+      if (signature === lastProgressSignature) {
+        updateProgressTimer(progress);
+        return;
+      }
+      lastProgressSignature = signature;
       var label = progressLabel(progress);
       launcherStatus.textContent = label;
       launcher.title = progressDetails(progress);

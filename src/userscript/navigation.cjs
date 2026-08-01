@@ -13,7 +13,7 @@
   function waitForQuestionChange(documentNode, previousId, readId, options) {
     var config = options || {};
     var timeoutMs = Number(config.timeoutMs) > 0 ? Number(config.timeoutMs) : 15000;
-    var pollMs = Number(config.pollMs) > 0 ? Number(config.pollMs) : 100;
+    var pollMs = Number(config.pollMs) > 0 ? Number(config.pollMs) : 400;
     var cancelled = typeof config.isCancelled === "function" ? config.isCancelled : function () { return false; };
     var current = typeof readId === "function" ? readId() : "";
     if (current && current !== previousId) return Promise.resolve(true);
@@ -47,9 +47,9 @@
         : documentNode && documentNode.body;
       if (MutationObserverCtor && observationRoot) {
         observer = new MutationObserverCtor(check);
-        observer.observe(observationRoot, { childList: true, subtree: true, characterData: true });
+        observer.observe(observationRoot, { childList: true, subtree: true });
       }
-      interval = setInterval(check, pollMs);
+      if (!observer) interval = setInterval(check, pollMs);
       timer = setTimeout(function () { finish(false); }, timeoutMs);
       check();
     });

@@ -27,5 +27,5 @@ test("observa o contêiner estável do caderno em vez do body inteiro", async ()
 
   assert.equal(result, false);
   assert.equal(observed[0].target, caderno);
-  assert.deepEqual(observed[0].options, { childList: true, subtree: true, characterData: true });
+  assert.deepEqual(observed[0].options, { childList: true, subtree: true });
 });

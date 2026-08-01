@@ -36,7 +36,7 @@
         var result = predicate();
         if (result) return resolve(result);
         if (Date.now() - started >= timeout) return reject(new Error(message || "O TecConcursos não carregou o controle esperado a tempo."));
-        setTimeout(tick, 120);
+        setTimeout(tick, 300);
       }
       tick();
     });

@@ -1012,7 +1012,7 @@
   var SYNC_CHANNEL_NAME = "tecconcursos_caderno_automation_sync_v1";
   var COMMAND_KEY = "tecconcursos_caderno_automation_command_v1";
   var LOCK_LEASE_MS = 30000;
-  var LOCK_HEARTBEAT_MS = 5000;
+  var LOCK_HEARTBEAT_MS = 10000;
 
   function clean(value) {
     return String(value == null ? "" : value).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -1490,7 +1490,7 @@
         var result = predicate();
         if (result) return resolve(result);
         if (Date.now() - started >= timeout) return reject(new Error(message || "O TecConcursos não carregou o controle esperado a tempo."));
-        setTimeout(tick, 120);
+        setTimeout(tick, 300);
       }
       tick();
     });
@@ -1677,18 +1677,17 @@
     if (!duration || cancelled()) return Promise.resolve(!cancelled());
 
     return new Promise(function (resolve) {
-      var interval = setInterval(function () {
+      var timer = setTimeout(function () {
+        clearInterval(cancelTimer);
+        resolve(true);
+      }, duration);
+      var cancelTimer = setInterval(function () {
         if (cancelled()) {
-          clearInterval(interval);
+          clearInterval(cancelTimer);
+          clearTimeout(timer);
           resolve(false);
-          return;
         }
-        if (Date.now() >= deadline) {
-          clearInterval(interval);
-          resolve(true);
-        }
-      }, Math.min(100, duration));
-      var deadline = Date.now() + duration;
+      }, 500);
     });
   }
 
@@ -4119,7 +4118,7 @@
   function waitForQuestionChange(documentNode, previousId, readId, options) {
     var config = options || {};
     var timeoutMs = Number(config.timeoutMs) > 0 ? Number(config.timeoutMs) : 15000;
-    var pollMs = Number(config.pollMs) > 0 ? Number(config.pollMs) : 100;
+    var pollMs = Number(config.pollMs) > 0 ? Number(config.pollMs) : 400;
     var cancelled = typeof config.isCancelled === "function" ? config.isCancelled : function () { return false; };
     var current = typeof readId === "function" ? readId() : "";
     if (current && current !== previousId) return Promise.resolve(true);
@@ -4153,9 +4152,9 @@
         : documentNode && documentNode.body;
       if (MutationObserverCtor && observationRoot) {
         observer = new MutationObserverCtor(check);
-        observer.observe(observationRoot, { childList: true, subtree: true, characterData: true });
+        observer.observe(observationRoot, { childList: true, subtree: true });
       }
-      interval = setInterval(check, pollMs);
+      if (!observer) interval = setInterval(check, pollMs);
       timer = setTimeout(function () { finish(false); }, timeoutMs);
       check();
     });
@@ -4759,6 +4758,7 @@
     var progressTimerMs = 0;
     var refreshFrame = null;
     var refreshIncludesSummary = false;
+    var lastProgressSignature = null;
 
     function progressSnapshot() {
       return typeof config.getProgress === "function" ? (config.getProgress() || {}) : {};
@@ -4805,7 +4805,7 @@
 
     function updateProgressTimer(progress) {
       var isOpen = panel.classList.contains("open");
-      var desiredInterval = isOpen ? 1000 : progress.running ? 2000 : 0;
+      var desiredInterval = isOpen ? 2000 : progress.running ? 5000 : 0;
       if (!desiredInterval) {
         if (progressTimer != null) clearInterval(progressTimer);
         progressTimer = null;
@@ -4864,8 +4864,24 @@
       cardBarFill.style.width = Math.min(100, Math.round((index / total) * 100)) + "%";
     }
 
+    function progressSignature(progress) {
+      return [
+        progress.running, progress.phase, progress.stale, progress.lockedByOtherTab,
+        progress.message, progress.updatedAt,
+        progress.matterIndex, progress.mattersTotal,
+        progress.rangeIndex, progress.rangesTotal,
+        progress.matterTitle, progress.matterCode
+      ].map(function (value) { return String(value == null ? "" : value); }).join("|");
+    }
+
     function refreshProgress(includeSummary) {
       var progress = progressSnapshot();
+      var signature = progressSignature(progress);
+      if (signature === lastProgressSignature) {
+        updateProgressTimer(progress);
+        return;
+      }
+      lastProgressSignature = signature;
       var label = progressLabel(progress);
       launcherStatus.textContent = label;
       launcher.title = progressDetails(progress);
@@ -5166,6 +5182,8 @@
     return true;
   }
 
+  var IMAGE_GUARD_IDLE_MS = 120000;
+
   function installImageGuard(target, documentNode) {
     if (!documentNode) return false;
     var existing = IMAGE_GUARD_RECORDS.find(function (item) { return item.target === target && item.document === documentNode; });
@@ -5179,17 +5197,56 @@
     var Observer = target && target.MutationObserver;
     if (!Observer && documentNode.defaultView) Observer = documentNode.defaultView.MutationObserver;
     var observer = null;
+    var queue = [];
+    var frame = null;
+    var idleTimer = null;
+    var disposed = false;
+
+    function flush() {
+      frame = null;
+      if (disposed) return;
+      var pending = queue;
+      queue = [];
+      for (var i = 0; i < pending.length; i += 1) scan(pending[i]);
+      armIdle();
+    }
+
+    function scheduleFlush() {
+      if (frame != null || disposed) return;
+      var view = documentNode.defaultView || {};
+      var request = typeof view.requestAnimationFrame === "function"
+        ? view.requestAnimationFrame.bind(view)
+        : function (callback) { return setTimeout(callback, 16); };
+      frame = request(flush);
+    }
+
+    function armIdle() {
+      if (idleTimer != null) clearTimeout(idleTimer);
+      idleTimer = setTimeout(function () { idleTimer = null; dispose(); }, IMAGE_GUARD_IDLE_MS);
+    }
+
+    function dispose() {
+      if (disposed) return;
+      disposed = true;
+      if (idleTimer != null) { clearTimeout(idleTimer); idleTimer = null; }
+      if (observer && observer.disconnect) observer.disconnect();
+      observer = null;
+    }
+
     if (typeof Observer === "function") {
       try {
         observer = new Observer(function (mutations) {
-          mutations.forEach(function (mutation) {
-            Array.from(mutation.addedNodes || []).forEach(scan);
-          });
+          for (var i = 0; i < mutations.length; i += 1) {
+            var added = mutations[i].addedNodes || [];
+            for (var j = 0; j < added.length; j += 1) queue.push(added[j]);
+          }
+          scheduleFlush();
         });
-        observer.observe(documentNode.documentElement || documentNode, { childList: true, subtree: true });
+        observer.observe(documentNode.body || documentNode.documentElement || documentNode, { childList: true, subtree: true });
       } catch (_) { observer = null; }
     }
-    IMAGE_GUARD_RECORDS.push({ target: target, document: documentNode, observer: observer });
+    armIdle();
+    IMAGE_GUARD_RECORDS.push({ target: target, document: documentNode, observer: observer, dispose: dispose });
     return true;
   }
 
@@ -5353,7 +5410,7 @@
   }
 
   function pageWorldSource() {
-    return String.raw`(function(){if(window.__tecConcursosPrintGuard)return;var route=/\/questoes\/cadernos\/\d+\/imprimir(?:\/|$)/i.test(String(location&&location.pathname||''));if(!route)return;var placeholder='${IMAGE_PLACEHOLDER}';var isPrint=function(value){if(value==null||value==='')return false;try{return /\/questoes\/cadernos\/\d+\/imprimir(?:\/|$)/i.test(new URL(String(value),location.href).pathname);}catch(_){return /\/questoes\/cadernos\/\d+\/imprimir/i.test(String(value));}};var defer=function(image){if(!image||!image.getAttribute||!image.setAttribute||image.getAttribute('data-tec-image-deferred')==='1')return;var source=image.getAttribute('data-tec-original-src')||image.getAttribute('src')||image.getAttribute('data-src')||'';var sourceSet=image.getAttribute('data-tec-original-srcset')||image.getAttribute('srcset')||'';if(!source&&!sourceSet)return;if(source&&source!==placeholder)image.setAttribute('data-tec-original-src',source);if(sourceSet){image.setAttribute('data-tec-original-srcset',sourceSet);image.removeAttribute&&image.removeAttribute('srcset');}image.setAttribute('loading','lazy');image.setAttribute('decoding','async');if(source&&source!==placeholder)image.setAttribute('src',placeholder);image.setAttribute('data-tec-image-deferred','1');};var scan=function(node){if(!node)return;if(String(node.tagName||'').toUpperCase()==='IMG')defer(node);if(node.querySelectorAll)Array.prototype.forEach.call(node.querySelectorAll('img'),defer);};scan(document);var Observer=window.MutationObserver;if(typeof Observer==='function'&&!window.__tecConcursosImageObserver){try{var observer=new Observer(function(mutations){mutations.forEach(function(mutation){Array.prototype.forEach.call(mutation.addedNodes||[],scan);});});observer.observe(document.documentElement||document,{childList:true,subtree:true});window.__tecConcursosImageObserver=observer;}catch(_){}}var imageProto=window.HTMLImageElement&&window.HTMLImageElement.prototype;var srcDescriptor=imageProto&&Object.getOwnPropertyDescriptor(imageProto,'src');if(srcDescriptor&&srcDescriptor.set){try{Object.defineProperty(imageProto,'src',{configurable:srcDescriptor.configurable,enumerable:srcDescriptor.enumerable,get:srcDescriptor.get,set:function(value){var source=String(value==null?'':value);if(source&&source!==placeholder){this.setAttribute('data-tec-original-src',source);this.setAttribute('loading','lazy');this.setAttribute('decoding','async');this.setAttribute('data-tec-image-deferred','1');return srcDescriptor.set.call(this,placeholder);}return srcDescriptor.set.call(this,value);}});}catch(_){}}var blocked=function(){return undefined;};try{Object.defineProperty(window,'print',{configurable:false,enumerable:true,get:function(){return blocked;},set:function(){}});}catch(_){try{window.print=blocked;}catch(__){}}var originalOpen=window.open;if(typeof originalOpen==='function'){try{Object.defineProperty(window,'open',{configurable:true,writable:true,value:function(url){if(isPrint(url))return null;return originalOpen.apply(this,arguments);}});}catch(_){}}var proto=window.HTMLFormElement&&window.HTMLFormElement.prototype;['submit','requestSubmit'].forEach(function(name){if(!proto||typeof proto[name]!=='function')return;var original=proto[name];try{Object.defineProperty(proto,name,{configurable:true,writable:true,value:function(){var action=this.getAttribute&&this.getAttribute('action')||this.action||'';if(isPrint(action))return undefined;return original.apply(this,arguments);}});}catch(_){}});var cancel=function(event){var node=event&&event.target;var form=node&&(node.form||node);var action=form&&(form.getAttribute&&form.getAttribute('action')||form.action||'');var href=node&&(node.href||(node.getAttribute&&node.getAttribute('href')));if(isPrint(action)||isPrint(href)){event.preventDefault&&event.preventDefault();event.stopImmediatePropagation&&event.stopImmediatePropagation();event.stopPropagation&&event.stopPropagation();}};document.addEventListener('click',cancel,true);document.addEventListener('submit',cancel,true);try{Object.defineProperty(window,'__tecConcursosPrintGuard',{configurable:false,value:true});}catch(_){window.__tecConcursosPrintGuard=true;}})();`;
+    return String.raw`(function(){if(window.__tecConcursosPrintGuard)return;var route=/\/questoes\/cadernos\/\d+\/imprimir(?:\/|$)/i.test(String(location&&location.pathname||''));if(!route)return;var placeholder='${IMAGE_PLACEHOLDER}';var isPrint=function(value){if(value==null||value==='')return false;try{return /\/questoes\/cadernos\/\d+\/imprimir(?:\/|$)/i.test(new URL(String(value),location.href).pathname);}catch(_){return /\/questoes\/cadernos\/\d+\/imprimir/i.test(String(value));}};var defer=function(image){if(!image||!image.getAttribute||!image.setAttribute||image.getAttribute('data-tec-image-deferred')==='1')return;var source=image.getAttribute('data-tec-original-src')||image.getAttribute('src')||image.getAttribute('data-src')||'';var sourceSet=image.getAttribute('data-tec-original-srcset')||image.getAttribute('srcset')||'';if(!source&&!sourceSet)return;if(source&&source!==placeholder)image.setAttribute('data-tec-original-src',source);if(sourceSet){image.setAttribute('data-tec-original-srcset',sourceSet);image.removeAttribute&&image.removeAttribute('srcset');}image.setAttribute('loading','lazy');image.setAttribute('decoding','async');if(source&&source!==placeholder)image.setAttribute('src',placeholder);image.setAttribute('data-tec-image-deferred','1');};var scan=function(node){if(!node)return;if(String(node.tagName||'').toUpperCase()==='IMG')defer(node);if(node.querySelectorAll)Array.prototype.forEach.call(node.querySelectorAll('img'),defer);};scan(document);var Observer=window.MutationObserver;if(typeof Observer==='function'&&!window.__tecConcursosImageObserver){try{var queue=[];var frame=null;var idle=null;var flush=function(){frame=null;var pending=queue;queue=[];for(var q=0;q<pending.length;q+=1)scan(pending[q]);clearTimeout(idle);idle=setTimeout(function(){idle=null;try{observer.disconnect();}catch(_){}},120000);};var schedule=function(){if(frame!=null)return;var raf=window.requestAnimationFrame||function(callback){return setTimeout(callback,16);};frame=raf(flush);};var observer=new Observer(function(mutations){for(var m=0;m<mutations.length;m+=1){var added=mutations[m].addedNodes||[];for(var n=0;n<added.length;n+=1)queue.push(added[n]);}schedule();});observer.observe(document.body||document.documentElement||document,{childList:true,subtree:true});window.__tecConcursosImageObserver=observer;}catch(_){}}var imageProto=window.HTMLImageElement&&window.HTMLImageElement.prototype;var srcDescriptor=imageProto&&Object.getOwnPropertyDescriptor(imageProto,'src');if(srcDescriptor&&srcDescriptor.set){try{Object.defineProperty(imageProto,'src',{configurable:srcDescriptor.configurable,enumerable:srcDescriptor.enumerable,get:srcDescriptor.get,set:function(value){var source=String(value==null?'':value);if(source&&source!==placeholder){this.setAttribute('data-tec-original-src',source);this.setAttribute('loading','lazy');this.setAttribute('decoding','async');this.setAttribute('data-tec-image-deferred','1');return srcDescriptor.set.call(this,placeholder);}return srcDescriptor.set.call(this,value);}});}catch(_){}}var blocked=function(){return undefined;};try{Object.defineProperty(window,'print',{configurable:false,enumerable:true,get:function(){return blocked;},set:function(){}});}catch(_){try{window.print=blocked;}catch(__){}}var originalOpen=window.open;if(typeof originalOpen==='function'){try{Object.defineProperty(window,'open',{configurable:true,writable:true,value:function(url){if(isPrint(url))return null;return originalOpen.apply(this,arguments);}});}catch(_){}}var proto=window.HTMLFormElement&&window.HTMLFormElement.prototype;['submit','requestSubmit'].forEach(function(name){if(!proto||typeof proto[name]!=='function')return;var original=proto[name];try{Object.defineProperty(proto,name,{configurable:true,writable:true,value:function(){var action=this.getAttribute&&this.getAttribute('action')||this.action||'';if(isPrint(action))return undefined;return original.apply(this,arguments);}});}catch(_){}});var cancel=function(event){var node=event&&event.target;var form=node&&(node.form||node);var action=form&&(form.getAttribute&&form.getAttribute('action')||form.action||'');var href=node&&(node.href||(node.getAttribute&&node.getAttribute('href')));if(isPrint(action)||isPrint(href)){event.preventDefault&&event.preventDefault();event.stopImmediatePropagation&&event.stopImmediatePropagation();event.stopPropagation&&event.stopPropagation();}};document.addEventListener('click',cancel,true);document.addEventListener('submit',cancel,true);try{Object.defineProperty(window,'__tecConcursosPrintGuard',{configurable:false,value:true});}catch(_){window.__tecConcursosPrintGuard=true;}})();`;
   }
 
   function installPageWorldBridge(documentNode, options) {

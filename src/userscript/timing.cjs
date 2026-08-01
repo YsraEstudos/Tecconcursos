@@ -30,18 +30,17 @@
     if (!duration || cancelled()) return Promise.resolve(!cancelled());
 
     return new Promise(function (resolve) {
-      var interval = setInterval(function () {
+      var timer = setTimeout(function () {
+        clearInterval(cancelTimer);
+        resolve(true);
+      }, duration);
+      var cancelTimer = setInterval(function () {
         if (cancelled()) {
-          clearInterval(interval);
+          clearInterval(cancelTimer);
+          clearTimeout(timer);
           resolve(false);
-          return;
         }
-        if (Date.now() >= deadline) {
-          clearInterval(interval);
-          resolve(true);
-        }
-      }, Math.min(100, duration));
-      var deadline = Date.now() + duration;
+      }, 500);
     });
   }
 
