@@ -13,7 +13,7 @@ test("bundle tem metadata válida, rota de caderno e atualização", () => {
   const bundle = fs.readFileSync(bundlePath, "utf8");
   assert.match(bundle, /^\/\/ ==UserScript==/);
   assert.match(bundle, /\/\/ ==\/UserScript==/);
-  assert.match(bundle, /@version\s+2\.7\.0/);
+  assert.match(bundle, /@version\s+2\.7\.1/);
   assert.match(bundle, /@match\s+https:\/\/www\.tecconcursos\.com\.br\/\*/);
   assert.match(bundle, /@match\s+https:\/\/tecconcursos\.com\.br\/\*/);
   assert.match(bundle, /@run-at\s+document-start/);
