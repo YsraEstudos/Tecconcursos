@@ -28,7 +28,7 @@
       var code = String(matter && matter.code || "").trim().toUpperCase();
       var entry = byCode[code];
       var savedParts = entry && Array.isArray(entry.parts) ? entry.parts.length : 0;
-      var savedQuestions = entry && Array.isArray(entry.questions) ? entry.questions.length : 0;
+      var savedQuestions = entry && (Number(entry.questionCount) || (Array.isArray(entry.questions) ? entry.questions.length : 0)) || 0;
       var totalQuestions = Number(entry && entry.totalQuestions) || 0;
       var expectedParts = totalQuestions ? Math.ceil(totalQuestions / 200) : 0;
       var complete = Boolean(entry && ((totalQuestions > 0 && savedQuestions >= totalQuestions) || (expectedParts > 0 && savedParts >= expectedParts)));
@@ -364,7 +364,7 @@
           open.addEventListener("click", function () { if (config.onSelect) config.onSelect(entry.id); });
           item.appendChild(open);
           var info = documentNode.createElement("small");
-          info.textContent = String(entry.questions ? entry.questions.length : entry.totalQuestions || 0) + " questões · " + String(entry.parts ? entry.parts.length : 0) + " parte(s)";
+          info.textContent = String(entry.questionCount || (entry.questions ? entry.questions.length : 0) || entry.totalQuestions || 0) + " questões · " + String(entry.parts ? entry.parts.length : 0) + " parte(s)";
           item.appendChild(info);
           var actions = documentNode.createElement("div");
           actions.className = "entry-actions";

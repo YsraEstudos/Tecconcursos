@@ -78,3 +78,60 @@ test("lista a biblioteca com uma única leitura do armazenamento", () => {
   assert.equal(entries.length, 2);
   assert.equal(reads, 1);
 });
+
+test("migra a biblioteca antiga para chaves por entrada sem perder questões", () => {
+  const legacy = {
+    version: 1,
+    entries: {
+      "caderno-persistente": {
+        id: "caderno-persistente",
+        title: "Caderno persistente",
+        code: "MAT-001",
+        group: "Português",
+        parts: [{ start: 1, count: 1 }],
+        questions: [question("q1", 1)]
+      }
+    }
+  };
+  const storage = storageStub({ tecconcursos_export_library_v1: legacy });
+  const instance = library.createLibrary(storage);
+
+  assert.equal(instance.get("caderno-persistente").questions.length, 1);
+  assert.ok(storage.values.has(library.LIBRARY_ENTRY_PREFIX + "caderno-persistente"));
+  assert.equal(Array.isArray(storage.values.get("tecconcursos_export_library_v1").entries["caderno-persistente"].questions), false);
+  assert.equal(storage.values.get("tecconcursos_export_library_v1").entries["caderno-persistente"].questionCount, 1);
+});
+
+test("appendPart grava a entrada em chave própria e mantém o índice leve", () => {
+  const storage = storageStub();
+  const instance = library.createLibrary(storage);
+  instance.appendPart(entry(1), [question("q1", 1), question("q2", 2)]);
+
+  const saved = storage.values.get(library.LIBRARY_ENTRY_PREFIX + "caderno-persistente");
+  assert.equal(saved.questions.length, 2);
+  assert.equal(saved.questions[0].id, "q1");
+  const index = storage.values.get("tecconcursos_export_library_v1");
+  assert.equal(index.entries["caderno-persistente"].questionCount, 2);
+  assert.equal(index.entries["caderno-persistente"].questions, undefined);
+});
+
+test("remove apaga a entrada e o índice", () => {
+  const storage = storageStub();
+  const instance = library.createLibrary(storage);
+  instance.appendPart(entry(1), [question("q1", 1)]);
+  instance.remove("caderno-persistente");
+
+  assert.equal(storage.values.has(library.LIBRARY_ENTRY_PREFIX + "caderno-persistente"), false);
+  assert.deepEqual(instance.list(), []);
+});
+
+test("list expõe o metadado sem carregar as questões de cada entrada", () => {
+  const storage = storageStub();
+  const instance = library.createLibrary(storage);
+  instance.appendPart(entry(1), [question("q1", 1)]);
+
+  const listed = instance.list()[0];
+  assert.equal(listed.questionCount, 1);
+  assert.equal(listed.questions, undefined);
+  assert.equal(listed.title, "Caderno persistente");
+});

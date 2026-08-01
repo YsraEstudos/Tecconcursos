@@ -33,18 +33,38 @@
 
     function write(key, value) {
       if (hasSet) {
-        runtime.GM_setValue(key, value);
-        return;
+        try {
+          runtime.GM_setValue(key, value);
+          return true;
+        } catch (_) {
+          return false;
+        }
       }
-      if (local && local.setItem) local.setItem(key, JSON.stringify(value));
+      if (local && local.setItem) {
+        try {
+          local.setItem(key, JSON.stringify(value));
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+      return false;
     }
 
     function remove(key) {
       if (hasDelete) {
-        runtime.GM_deleteValue(key);
-        return;
+        try {
+          runtime.GM_deleteValue(key);
+          return;
+        } catch (_) {
+          return;
+        }
       }
-      if (local && local.removeItem) local.removeItem(key);
+      if (local && local.removeItem) {
+        try {
+          local.removeItem(key);
+        } catch (_) {}
+      }
     }
 
     return { read: read, write: write, remove: remove };

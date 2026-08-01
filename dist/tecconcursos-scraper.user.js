@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      2.6.0
+// @version      2.7.0
 // @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.
 // @author       Codex
 // @match        https://www.tecconcursos.com.br/*
@@ -840,18 +840,38 @@
 
     function write(key, value) {
       if (hasSet) {
-        runtime.GM_setValue(key, value);
-        return;
+        try {
+          runtime.GM_setValue(key, value);
+          return true;
+        } catch (_) {
+          return false;
+        }
       }
-      if (local && local.setItem) local.setItem(key, JSON.stringify(value));
+      if (local && local.setItem) {
+        try {
+          local.setItem(key, JSON.stringify(value));
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+      return false;
     }
 
     function remove(key) {
       if (hasDelete) {
-        runtime.GM_deleteValue(key);
-        return;
+        try {
+          runtime.GM_deleteValue(key);
+          return;
+        } catch (_) {
+          return;
+        }
       }
-      if (local && local.removeItem) local.removeItem(key);
+      if (local && local.removeItem) {
+        try {
+          local.removeItem(key);
+        } catch (_) {}
+      }
     }
 
     return { read: read, write: write, remove: remove };
@@ -1711,6 +1731,18 @@
 
   var gabaritoModule = deps && deps.gabarito;
   var LIBRARY_KEY = "tecconcursos_export_library_v1";
+  var LIBRARY_ENTRY_PREFIX = "tecconcursos_export_library_entry_v1:";
+
+  function entryStorageKey(id) {
+    return LIBRARY_ENTRY_PREFIX + String(id);
+  }
+
+  function entryMetadata(entry) {
+    var metadata = Object.assign({}, entry);
+    metadata.questionCount = Array.isArray(entry && entry.questions) ? entry.questions.length : Number(metadata.questionCount) || 0;
+    delete metadata.questions;
+    return metadata;
+  }
 
   function clean(value) {
     return String(value == null ? "" : value).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -1921,11 +1953,38 @@
   }
 
   function createLibrary(storage) {
-    function read() {
+    function readIndex() {
       return normalizeLibrary(storage.read(LIBRARY_KEY, emptyLibrary()));
     }
-    function write(library) {
+    function writeIndex(library) {
       storage.write(LIBRARY_KEY, library);
+    }
+    function readEntry(id) {
+      var value = storage.read(entryStorageKey(id), null);
+      return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    }
+    function writeEntry(id, entry) {
+      storage.write(entryStorageKey(id), entry);
+    }
+    function removeEntry(id) {
+      if (typeof storage.remove === "function") storage.remove(entryStorageKey(id));
+      else storage.write(entryStorageKey(id), null);
+    }
+    function migrateLegacy(library) {
+      var touched = false;
+      Object.keys(library.entries).forEach(function (key) {
+        var entry = library.entries[key];
+        if (entry && Array.isArray(entry.questions)) {
+          writeEntry(key, entry);
+          library.entries[key] = entryMetadata(entry);
+          touched = true;
+        }
+      });
+      if (touched) writeIndex(library);
+      return library;
+    }
+    function read() {
+      return migrateLegacy(normalizeLibrary(storage.read(LIBRARY_KEY, emptyLibrary())));
     }
     function list() {
       var entries = read().entries;
@@ -1937,13 +1996,16 @@
       });
     }
     function get(id) {
-      return read().entries[String(id)] || null;
+      var key = String(id);
+      var entry = readEntry(key);
+      if (entry) return entry;
+      read();
+      return readEntry(key);
     }
     function appendPart(info, questions) {
-      var library = read();
       var key = String(info.libraryId || info.cadernoId || info.code || "");
       if (!key) throw new Error("Não foi possível identificar o caderno para a biblioteca.");
-      var old = library.entries[key] || { id: key, questions: [], parts: [] };
+      var old = readEntry(key) || { id: key, questions: [], parts: [] };
       var existing = {};
       (old.questions || []).forEach(function (question) { existing[questionKey(question)] = true; });
       var added = (Array.isArray(questions) ? questions : []).filter(function (question) {
@@ -1959,21 +2021,30 @@
         count: added.length || Number(previousPart && previousPart.count) || 0,
         savedAt: new Date().toISOString()
       });
-      library.entries[key] = Object.assign({}, old, info, {
+      var merged = Object.assign({}, old, info, {
         id: key,
         questions: (old.questions || []).concat(added),
         parts: parts.sort(function (left, right) { return left.start - right.start; }),
         updatedAt: new Date().toISOString()
       });
-      write(library);
-      return library.entries[key];
+      writeEntry(key, merged);
+      var index = readIndex();
+      index.entries[key] = entryMetadata(merged);
+      writeIndex(index);
+      return merged;
     }
     function remove(id) {
-      var library = read();
-      delete library.entries[String(id)];
-      write(library);
+      var key = String(id);
+      removeEntry(key);
+      var library = readIndex();
+      delete library.entries[key];
+      writeIndex(library);
     }
-    function clear() { write(emptyLibrary()); }
+    function clear() {
+      var library = readIndex();
+      Object.keys(library.entries).forEach(removeEntry);
+      writeIndex(emptyLibrary());
+    }
     return { list: list, get: get, appendPart: appendPart, remove: remove, clear: clear };
   }
 
@@ -2371,6 +2442,7 @@
 
   return {
     LIBRARY_KEY: LIBRARY_KEY,
+    LIBRARY_ENTRY_PREFIX: LIBRARY_ENTRY_PREFIX,
     safeFilename: safeFilename,
     parseHeader: parseHeader,
     parsePrintedQuestion: parsePrintedQuestion,
@@ -4671,7 +4743,7 @@
       var code = String(matter && matter.code || "").trim().toUpperCase();
       var entry = byCode[code];
       var savedParts = entry && Array.isArray(entry.parts) ? entry.parts.length : 0;
-      var savedQuestions = entry && Array.isArray(entry.questions) ? entry.questions.length : 0;
+      var savedQuestions = entry && (Number(entry.questionCount) || (Array.isArray(entry.questions) ? entry.questions.length : 0)) || 0;
       var totalQuestions = Number(entry && entry.totalQuestions) || 0;
       var expectedParts = totalQuestions ? Math.ceil(totalQuestions / 200) : 0;
       var complete = Boolean(entry && ((totalQuestions > 0 && savedQuestions >= totalQuestions) || (expectedParts > 0 && savedParts >= expectedParts)));
@@ -5007,7 +5079,7 @@
           open.addEventListener("click", function () { if (config.onSelect) config.onSelect(entry.id); });
           item.appendChild(open);
           var info = documentNode.createElement("small");
-          info.textContent = String(entry.questions ? entry.questions.length : entry.totalQuestions || 0) + " questões · " + String(entry.parts ? entry.parts.length : 0) + " parte(s)";
+          info.textContent = String(entry.questionCount || (entry.questions ? entry.questions.length : 0) || entry.totalQuestions || 0) + " questões · " + String(entry.parts ? entry.parts.length : 0) + " parte(s)";
           item.appendChild(info);
           var actions = documentNode.createElement("div");
           actions.className = "entry-actions";

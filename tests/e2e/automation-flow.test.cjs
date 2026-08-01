@@ -9,6 +9,7 @@ const projectRoot = path.resolve(__dirname, "../..");
 const bundle = fs.readFileSync(path.join(projectRoot, "tecconcursos-scraper.user.js"), "utf8");
 const stateKey = "tecconcursos_caderno_automation_v1";
 const libraryKey = "tecconcursos_export_library_v1";
+const libraryEntryPrefix = "tecconcursos_export_library_entry_v1:";
 const planKey = "tecconcursos_caderno_plan_v1";
 
 function cadernoIdFor(total) {
@@ -405,11 +406,11 @@ test("reinicia a busca na pasta e reutiliza o caderno existente pelo nome", { ti
     assert.equal(await page.evaluate(() => Boolean(window.TecConcursosModules.automationFilters.findCadernoLinkByTitle(document, "Coesão textual - Base FCC"))), true);
     await page.locator("#tec-library-launcher").click();
     await page.locator("[data-action='restart']").click();
-    await page.waitForFunction(({ libraryKey, stateKey }) => {
-      const library = JSON.parse(localStorage.getItem(libraryKey) || "{}");
+    await page.waitForFunction(({ libraryKey, stateKey, entryPrefix }) => {
       const state = JSON.parse(localStorage.getItem(stateKey) || "{}");
-      return library.entries && library.entries["9000001"] && library.entries["9000001"].questions.length === 1 && state.running === false && state.creation === null && state.progress && state.progress.phase === "completed";
-    }, { libraryKey, stateKey }, { timeout: 60000 });
+      const entry = JSON.parse(localStorage.getItem(entryPrefix + "9000001") || "null");
+      return entry && entry.questions && entry.questions.length === 1 && state.running === false && state.creation === null && state.progress && state.progress.phase === "completed";
+    }, { libraryKey, stateKey, entryPrefix: libraryEntryPrefix }, { timeout: 60000 });
     const result = await page.evaluate(({ libraryKey }) => ({
       library: JSON.parse(localStorage.getItem(libraryKey) || "{}"),
       state: JSON.parse(localStorage.getItem("tecconcursos_caderno_automation_v1") || "{}"),
@@ -458,27 +459,25 @@ test("executa o fluxo real de saída em múltiplas partes sem popup nem duplica�
       page.on("dialog", dialog => { events.push("dialog:" + dialog.message()); dialog.dismiss(); });
       await page.goto(`${fixture.origin}/questoes/cadernos/${id}`, { waitUntil: "domcontentloaded" });
       try {
-        await page.waitForFunction(({ stateKey, libraryKey, id, total }) => {
+        await page.waitForFunction(({ stateKey, libraryKey, id, total, entryPrefix }) => {
           const state = JSON.parse(localStorage.getItem(stateKey) || "{}");
-          const library = JSON.parse(localStorage.getItem(libraryKey) || "{}");
-          const entry = library.entries && library.entries[id];
+          const entry = JSON.parse(localStorage.getItem(entryPrefix + id) || "null");
           return state.running === false && state.progress && state.progress.phase === "completed" && entry && entry.questions && entry.questions.length === total;
-        }, { stateKey, libraryKey, id, total }, { timeout: 120000 });
+        }, { stateKey, libraryKey, id, total, entryPrefix: libraryEntryPrefix }, { timeout: 120000 });
       } catch (error) {
-        const diagnostic = await page.evaluate(({ stateKey, libraryKey }) => {
+        const diagnostic = await page.evaluate(({ stateKey, libraryKey, id, entryPrefix }) => {
           const state = JSON.parse(localStorage.getItem(stateKey) || "{}");
-          const library = JSON.parse(localStorage.getItem(libraryKey) || "{}");
-          const entry = library.entries && Object.values(library.entries)[0];
+          const entry = JSON.parse(localStorage.getItem(entryPrefix + id) || "null");
           return { href: location.href, phase: state.progress && state.progress.phase, message: state.progress && state.progress.message, rangeIndex: state.export && state.export.job && state.export.job.rangeIndex, rangesTotal: state.export && state.export.job && state.export.job.ranges && state.export.job.ranges.length, questionNodeCount: document.querySelectorAll(".questao").length, savedQuestions: entry && entry.questions && entry.questions.length, events: state.progress && state.progress.events && state.progress.events.slice(-5) };
-        }, { stateKey, libraryKey });
+        }, { stateKey, libraryKey, id, entryPrefix: libraryEntryPrefix });
         throw new Error(error.message + "\nDIAGNOSTIC=" + JSON.stringify(diagnostic) + "\nEVENTS=" + JSON.stringify(events));
       }
-      const result = await page.evaluate(({ stateKey, libraryKey, id }) => ({
+      const result = await page.evaluate(({ stateKey, libraryKey, id, entryPrefix }) => ({
         state: JSON.parse(localStorage.getItem(stateKey) || "{}"),
-        entry: JSON.parse(localStorage.getItem(libraryKey) || "{}").entries[id],
+        entry: JSON.parse(localStorage.getItem(entryPrefix + id) || "null"),
         printCalls: window.__printCalls || 0,
         path: window.location.pathname
-      }), { stateKey, libraryKey, id });
+      }), { stateKey, libraryKey, id, entryPrefix: libraryEntryPrefix });
       assert.equal(result.state.progress.phase, "completed");
       assert.equal(result.state.running, false);
       assert.equal(result.entry.questions.length, total);
@@ -532,18 +531,17 @@ test("retoma depois de falha na parte 7 sem repetir as seis partes concluídas",
   page.on("dialog", dialog => { errors.push("dialog:" + dialog.message()); dialog.dismiss(); });
   try {
     await page.goto(`${fixture.origin}/questoes/cadernos/${id}`, { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(({ stateKey, libraryKey, id }) => {
+    await page.waitForFunction(({ stateKey, libraryKey, id, entryPrefix }) => {
       const state = JSON.parse(localStorage.getItem(stateKey) || "{}");
-      const library = JSON.parse(localStorage.getItem(libraryKey) || "{}");
-      const entry = library.entries && library.entries[id];
+      const entry = JSON.parse(localStorage.getItem(entryPrefix + id) || "null");
       return state.running === false && state.progress && state.progress.phase === "error" && state.export && state.export.job && state.export.job.rangeIndex === 6 && entry && entry.questions && entry.questions.length === 1200 && entry.parts && entry.parts.length === 6;
-    }, { stateKey, libraryKey, id }, { timeout: 60000 });
+    }, { stateKey, libraryKey, id, entryPrefix: libraryEntryPrefix }, { timeout: 60000 });
 
-    const failedState = await page.evaluate(({ stateKey, libraryKey, id }) => ({
+    const failedState = await page.evaluate(({ stateKey, libraryKey, id, entryPrefix }) => ({
       state: JSON.parse(localStorage.getItem(stateKey) || "{}"),
-      entry: JSON.parse(localStorage.getItem(libraryKey) || "{}").entries[id],
+      entry: JSON.parse(localStorage.getItem(entryPrefix + id) || "null"),
       path: location.pathname + location.search
-    }), { stateKey, libraryKey, id });
+    }), { stateKey, libraryKey, id, entryPrefix: libraryEntryPrefix });
     assert.equal(failedState.state.progress.phase, "error");
     assert.equal(failedState.state.export.job.rangeIndex, 6);
     assert.equal(failedState.entry.questions.length, 1200);
@@ -558,17 +556,16 @@ test("retoma depois de falha na parte 7 sem repetir as seis partes concluídas",
     await page.locator("#tec-library-launcher").click();
     await page.locator("#tec-library-panel [data-action='resume']").click();
 
-    await page.waitForFunction(({ stateKey, libraryKey, id, total }) => {
+    await page.waitForFunction(({ stateKey, libraryKey, id, total, entryPrefix }) => {
       const state = JSON.parse(localStorage.getItem(stateKey) || "{}");
-      const library = JSON.parse(localStorage.getItem(libraryKey) || "{}");
-      const entry = library.entries && library.entries[id];
+      const entry = JSON.parse(localStorage.getItem(entryPrefix + id) || "null");
       return state.running === false && state.progress && state.progress.phase === "completed" && entry && entry.questions && entry.questions.length === total && entry.parts && entry.parts.length === 9;
-    }, { stateKey, libraryKey, id, total }, { timeout: 120000 });
+    }, { stateKey, libraryKey, id, total, entryPrefix: libraryEntryPrefix }, { timeout: 120000 });
 
-    const completed = await page.evaluate(({ stateKey, libraryKey, id }) => ({
+    const completed = await page.evaluate(({ stateKey, libraryKey, id, entryPrefix }) => ({
       state: JSON.parse(localStorage.getItem(stateKey) || "{}"),
-      entry: JSON.parse(localStorage.getItem(libraryKey) || "{}").entries[id]
-    }), { stateKey, libraryKey, id });
+      entry: JSON.parse(localStorage.getItem(entryPrefix + id) || "null")
+    }), { stateKey, libraryKey, id, entryPrefix: libraryEntryPrefix });
     assert.equal(completed.state.progress.phase, "completed");
     assert.equal(completed.entry.questions.length, total);
     assert.equal(new Set(completed.entry.questions.map(question => question.number)).size, total);
@@ -578,15 +575,15 @@ test("retoma depois de falha na parte 7 sem repetir as seis partes concluídas",
     assert.deepEqual(fixture.stats.printRequests.filter(request => request.start > 1201).map(request => request.start), [1401, 1601]);
     assert.deepEqual(errors, []);
   } catch (error) {
-    const diagnostic = await page.evaluate(({ stateKey, libraryKey, id }) => ({
+    const diagnostic = await page.evaluate(({ stateKey, libraryKey, id, entryPrefix }) => ({
       href: location.href,
       state: JSON.parse(localStorage.getItem(stateKey) || "{}"),
-      entry: JSON.parse(localStorage.getItem(libraryKey) || "{}").entries[id],
+      entry: JSON.parse(localStorage.getItem(entryPrefix + id) || "null"),
       failureApplied: Boolean(window.__fixtureFailureApplied),
       extractorType: window.TecConcursosModules && window.TecConcursosModules.library && typeof window.TecConcursosModules.library.extractPrintedQuestions,
       questionNodeCount: document.querySelectorAll(".questao").length,
       bodySample: String(document.body && (document.body.innerText || document.body.textContent) || "").slice(0, 400)
-    }), { stateKey, libraryKey, id }).catch(error => ({ evaluateError: error.message }));
+    }), { stateKey, libraryKey, id, entryPrefix: libraryEntryPrefix }).catch(error => ({ evaluateError: error.message }));
     throw new Error(error.message + "\nDIAGNOSTIC=" + JSON.stringify(diagnostic) + "\nPRINT_REQUESTS=" + JSON.stringify(fixture.stats.printRequests) + "\nERRORS=" + JSON.stringify(errors));
   } finally {
     await context.close();
@@ -692,12 +689,11 @@ test("cria o caderno com o título do plano antes de iniciar a impressão", { ti
   try {
     await page.goto(initialState.creation.filterUrl, { waitUntil: "domcontentloaded" });
     try {
-      await page.waitForFunction(({ stateKey, libraryKey }) => {
+      await page.waitForFunction(({ stateKey, libraryKey, entryPrefix }) => {
         const state = JSON.parse(localStorage.getItem(stateKey) || "{}");
-        const library = JSON.parse(localStorage.getItem(libraryKey) || "{}");
-        const entry = library.entries && library.entries["9000400"];
+        const entry = JSON.parse(localStorage.getItem(entryPrefix + "9000400") || "null");
         return state.running === false && state.creation === null && state.progress && state.progress.phase === "completed" && entry && entry.questions && entry.questions.length === 400;
-      }, { stateKey, libraryKey }, { timeout: 15000 });
+      }, { stateKey, libraryKey, entryPrefix: libraryEntryPrefix }, { timeout: 15000 });
     } catch (error) {
       const diagnostic = await page.evaluate(({ stateKey, libraryKey }) => {
         const state = JSON.parse(localStorage.getItem(stateKey) || "{}");
@@ -706,11 +702,11 @@ test("cria o caderno com o título do plano antes de iniciar a impressão", { ti
       }, { stateKey, libraryKey });
       throw new Error(error.message + "\nDIAGNOSTIC=" + JSON.stringify(diagnostic) + "\nERRORS=" + JSON.stringify(errors));
     }
-    const result = await page.evaluate(({ stateKey, libraryKey }) => ({
+    const result = await page.evaluate(({ stateKey, libraryKey, entryPrefix }) => ({
       state: JSON.parse(localStorage.getItem(stateKey) || "{}"),
-      entry: JSON.parse(localStorage.getItem(libraryKey) || "{}").entries["9000400"],
+      entry: JSON.parse(localStorage.getItem(entryPrefix + "9000400") || "null"),
       path: location.pathname
-    }), { stateKey, libraryKey });
+    }), { stateKey, libraryKey, entryPrefix: libraryEntryPrefix });
     assert.deepEqual(errors, []);
     assert.equal(result.state.progress.phase, "completed");
     assert.equal(result.entry.title, "Coesão textual - Base FCC");
@@ -772,17 +768,21 @@ test("processa vários cadernos do plano em sequência e retoma no caderno inter
   page.on("dialog", dialog => { errors.push("dialog:" + dialog.message()); dialog.dismiss(); });
   try {
     await page.goto(initialState.creation.filterUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(({ stateKey, libraryKey }) => {
+    await page.waitForFunction(({ stateKey, libraryKey, entryPrefix }) => {
       const state = JSON.parse(localStorage.getItem(stateKey) || "{}");
-      const entries = JSON.parse(localStorage.getItem(libraryKey) || "{}").entries || {};
-      return state.running === false && state.progress && state.progress.phase === "error" && state.creation && state.creation.index === 1 && state.export && state.export.job && state.export.job.rangeIndex === 1 && entries["9100001"] && entries["9100001"].questions.length === 1 && entries["9100002"] && entries["9100002"].questions.length === 200;
-    }, { stateKey, libraryKey }, { timeout: 120000 });
+      const entry1 = JSON.parse(localStorage.getItem(entryPrefix + "9100001") || "null");
+      const entry2 = JSON.parse(localStorage.getItem(entryPrefix + "9100002") || "null");
+      return state.running === false && state.progress && state.progress.phase === "error" && state.creation && state.creation.index === 1 && state.export && state.export.job && state.export.job.rangeIndex === 1 && entry1 && entry1.questions && entry1.questions.length === 1 && entry2 && entry2.questions && entry2.questions.length === 200;
+    }, { stateKey, libraryKey, entryPrefix: libraryEntryPrefix }, { timeout: 120000 });
 
-    const interrupted = await page.evaluate(({ stateKey, libraryKey }) => ({
+    const interrupted = await page.evaluate(({ stateKey, libraryKey, entryPrefix }) => ({
       state: JSON.parse(localStorage.getItem(stateKey) || "{}"),
-      entries: JSON.parse(localStorage.getItem(libraryKey) || "{}").entries || {},
+      entries: {
+        "9100001": JSON.parse(localStorage.getItem(entryPrefix + "9100001") || "null"),
+        "9100002": JSON.parse(localStorage.getItem(entryPrefix + "9100002") || "null")
+      },
       url: location.href
-    }), { stateKey, libraryKey });
+    }), { stateKey, libraryKey, entryPrefix: libraryEntryPrefix });
     assert.equal(interrupted.state.creation.index, 1);
     assert.equal(interrupted.state.export.job.cadernoId, "9100002");
     assert.equal(interrupted.state.export.job.rangeIndex, 1);
@@ -793,16 +793,27 @@ test("processa vários cadernos do plano em sequência e retoma no caderno inter
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.locator("#tec-library-launcher").click();
     await page.locator("#tec-library-panel [data-action='resume']").click();
-    await page.waitForFunction(({ stateKey, libraryKey }) => {
+    await page.waitForFunction(({ stateKey, libraryKey, entryPrefix }) => {
       const state = JSON.parse(localStorage.getItem(stateKey) || "{}");
-      const entries = JSON.parse(localStorage.getItem(libraryKey) || "{}").entries || {};
-      return state.running === false && state.creation === null && state.progress && state.progress.phase === "completed" && Object.keys(entries).length === 4 && Object.values(entries).every(entry => entry.questions && entry.questions.length > 0);
-    }, { stateKey, libraryKey }, { timeout: 180000 });
+      const index = JSON.parse(localStorage.getItem(libraryKey) || "{}");
+      const keys = Object.keys(index.entries || {});
+      return state.running === false && state.creation === null && state.progress && state.progress.phase === "completed" && keys.length === 4 && keys.every(key => {
+        const entry = JSON.parse(localStorage.getItem(entryPrefix + key) || "null");
+        return entry && entry.questions && entry.questions.length > 0;
+      });
+    }, { stateKey, libraryKey, entryPrefix: libraryEntryPrefix }, { timeout: 180000 });
 
-    const completed = await page.evaluate(({ stateKey, libraryKey }) => ({
-      state: JSON.parse(localStorage.getItem(stateKey) || "{}"),
-      entries: JSON.parse(localStorage.getItem(libraryKey) || "{}").entries || {}
-    }), { stateKey, libraryKey });
+    const completed = await page.evaluate(({ stateKey, libraryKey, entryPrefix }) => {
+      const index = JSON.parse(localStorage.getItem(libraryKey) || "{}");
+      const entries = {};
+      for (const key of Object.keys(index.entries || {})) {
+        entries[key] = JSON.parse(localStorage.getItem(entryPrefix + key) || "null");
+      }
+      return {
+        state: JSON.parse(localStorage.getItem(stateKey) || "{}"),
+        entries
+      };
+    }, { stateKey, libraryKey, entryPrefix: libraryEntryPrefix });
     assert.deepEqual(completed.state.creation, null);
     assert.deepEqual(completed.state.export, null);
     assert.deepEqual(completed.state.progress.phase, "completed");
