@@ -14,6 +14,18 @@
     var hasSet = typeof runtime.GM_setValue === "function";
     var hasDelete = typeof runtime.GM_deleteValue === "function";
     var local = runtime.localStorage;
+    var maxWriteChars = 40 * 1024 * 1024;
+
+    function serializedLength(value) {
+      try {
+        if (value == null) return 0;
+        if (typeof value === "string") return value.length;
+        if (typeof value === "number" || typeof value === "boolean") return String(value).length;
+        return JSON.stringify(value).length;
+      } catch (_) {
+        return 0;
+      }
+    }
 
     function read(key, fallback) {
       if (hasGet) {
@@ -32,6 +44,7 @@
     }
 
     function write(key, value) {
+      if (serializedLength(value) > maxWriteChars) return false;
       if (hasSet) {
         try {
           runtime.GM_setValue(key, value);

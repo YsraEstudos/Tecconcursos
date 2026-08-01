@@ -7,7 +7,7 @@ function storageStub(initial) {
   return {
     values,
     read(key, fallback) { return values.has(key) ? values.get(key) : fallback; },
-    write(key, value) { values.set(key, value); },
+    write(key, value) { values.set(key, value); return true; },
     remove(key) { values.delete(key); }
   };
 }
@@ -134,4 +134,75 @@ test("list expõe o metadado sem carregar as questões de cada entrada", () => {
   assert.equal(listed.questionCount, 1);
   assert.equal(listed.questions, undefined);
   assert.equal(listed.title, "Caderno persistente");
+});
+
+test("slimEntryForStorage só remove imagens embutidas quando a entrada é gigante", () => {
+  const dataUri = "data:image/png;base64," + "A".repeat(1024 * 1024);
+  const base = {
+    id: "x",
+    title: "X",
+    questions: [{ id: "q1", number: 1, statementHtml: "<img src='" + dataUri + "'>", options: [{ letter: "A", html: "<img src='" + dataUri + "'>" }] }]
+  };
+  const small = library.slimEntryForStorage(base);
+  assert.equal(small, base, "entrada pequena não é tocada");
+
+  const huge = library.slimEntryForStorage({
+    id: "y",
+    title: "Y",
+    questions: Array.from({ length: 40 }, (_, index) => Object.assign({}, base.questions[0], { id: "q" + index }))
+  });
+  assert.equal(huge.questions.length, 40);
+  assert.equal(huge.questions[0].statementHtml.includes("base64"), false);
+  assert.equal(huge.questions[0].options[0].html.includes("base64"), false);
+  assert.equal(base.questions[0].statementHtml.includes("base64"), true, "original preservado");
+});
+
+test("appendPart enxuga imagens embutidas antes de gravar a entrada", () => {
+  const storage = storageStub();
+  const instance = library.createLibrary(storage);
+  const dataUri = "data:image/png;base64," + "A".repeat(1024 * 1024);
+  const questions = Array.from({ length: 40 }, (_, index) => ({
+    id: "huge-" + index,
+    number: index + 1,
+    bank: "FCC",
+    year: 2025,
+    statement: "Questão " + (index + 1),
+    statementHtml: "<img src='" + dataUri + "'>",
+    options: []
+  }));
+  instance.appendPart(entry(1), questions);
+
+  const saved = storage.values.get(library.LIBRARY_ENTRY_PREFIX + "caderno-persistente");
+  assert.ok(saved, "entrada gravada");
+  assert.ok(JSON.stringify(saved).length < 64 * 1024 * 1024, "entrada dentro do limite do GM");
+  assert.equal(saved.questions[0].statementHtml.includes("base64"), false);
+});
+
+test("migração falha silenciosamente por entrada sem perder o resto", () => {
+  const legacy = {
+    version: 1,
+    entries: {
+      "caderno-persistente": {
+        id: "caderno-persistente",
+        title: "Caderno persistente",
+        code: "MAT-001",
+        group: "Português",
+        questions: [question("q1", 1)]
+      }
+    }
+  };
+  const writes = new Map();
+  const storage = {
+    read(key, fallback) { return key === "tecconcursos_export_library_v1" ? legacy : fallback; },
+    write(key, value) {
+      if (key.indexOf(library.LIBRARY_ENTRY_PREFIX) === 0) return false;
+      writes.set(key, value);
+      return true;
+    },
+    remove() {}
+  };
+  const instance = library.createLibrary(storage);
+
+  assert.equal(instance.get("caderno-persistente").questions.length, 1);
+  assert.equal(legacy.entries["caderno-persistente"].questions.length, 1);
 });

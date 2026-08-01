@@ -821,6 +821,18 @@
     var hasSet = typeof runtime.GM_setValue === "function";
     var hasDelete = typeof runtime.GM_deleteValue === "function";
     var local = runtime.localStorage;
+    var maxWriteChars = 40 * 1024 * 1024;
+
+    function serializedLength(value) {
+      try {
+        if (value == null) return 0;
+        if (typeof value === "string") return value.length;
+        if (typeof value === "number" || typeof value === "boolean") return String(value).length;
+        return JSON.stringify(value).length;
+      } catch (_) {
+        return 0;
+      }
+    }
 
     function read(key, fallback) {
       if (hasGet) {
@@ -839,6 +851,7 @@
     }
 
     function write(key, value) {
+      if (serializedLength(value) > maxWriteChars) return false;
       if (hasSet) {
         try {
           runtime.GM_setValue(key, value);
@@ -1952,6 +1965,29 @@
     return String(question && (question.id || question.url || question.number) || "");
   }
 
+  var SLIM_CHARS = 32 * 1024 * 1024;
+
+  function stripDataUriImages(html) {
+    return String(html == null ? "" : html).replace(/data:image\/[a-zA-Z0-9.+-]+(?:;[a-zA-Z0-9=.\-]+)*;base64,[A-Za-z0-9+/=\s]+/gi, "");
+  }
+
+  function slimEntryForStorage(entry) {
+    if (!entry || !Array.isArray(entry.questions)) return entry;
+    var size = 0;
+    try { size = JSON.stringify(entry).length; } catch (_) { return entry; }
+    if (size <= SLIM_CHARS) return entry;
+    return Object.assign({}, entry, {
+      questions: entry.questions.map(function (question) {
+        return Object.assign({}, question, {
+          statementHtml: stripDataUriImages(question && question.statementHtml),
+          options: (question && question.options || []).map(function (option) {
+            return Object.assign({}, option, { html: stripDataUriImages(option && option.html) });
+          })
+        });
+      })
+    });
+  }
+
   function createLibrary(storage) {
     function readIndex() {
       return normalizeLibrary(storage.read(LIBRARY_KEY, emptyLibrary()));
@@ -1964,7 +2000,7 @@
       return value && typeof value === "object" && !Array.isArray(value) ? value : null;
     }
     function writeEntry(id, entry) {
-      storage.write(entryStorageKey(id), entry);
+      return storage.write(entryStorageKey(id), slimEntryForStorage(entry));
     }
     function removeEntry(id) {
       if (typeof storage.remove === "function") storage.remove(entryStorageKey(id));
@@ -1975,9 +2011,12 @@
       Object.keys(library.entries).forEach(function (key) {
         var entry = library.entries[key];
         if (entry && Array.isArray(entry.questions)) {
-          writeEntry(key, entry);
-          library.entries[key] = entryMetadata(entry);
-          touched = true;
+          try {
+            if (writeEntry(key, entry)) {
+              library.entries[key] = entryMetadata(entry);
+              touched = true;
+            }
+          } catch (_) {}
         }
       });
       if (touched) writeIndex(library);
@@ -1999,8 +2038,11 @@
       var key = String(id);
       var entry = readEntry(key);
       if (entry) return entry;
-      read();
-      return readEntry(key);
+      var library = read();
+      entry = readEntry(key);
+      if (entry) return entry;
+      var legacy = library.entries && library.entries[key];
+      return legacy && Array.isArray(legacy.questions) ? legacy : null;
     }
     function appendPart(info, questions) {
       var key = String(info.libraryId || info.cadernoId || info.code || "");
@@ -2443,6 +2485,8 @@
   return {
     LIBRARY_KEY: LIBRARY_KEY,
     LIBRARY_ENTRY_PREFIX: LIBRARY_ENTRY_PREFIX,
+    stripDataUriImages: stripDataUriImages,
+    slimEntryForStorage: slimEntryForStorage,
     safeFilename: safeFilename,
     parseHeader: parseHeader,
     parsePrintedQuestion: parsePrintedQuestion,
