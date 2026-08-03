@@ -34,6 +34,17 @@ test("não envia valores maiores que o limite de 64MiB para o GM", () => {
   assert.equal(calls.length, 1);
 });
 
+test("mede o payload em bytes UTF-8 e bloqueia mensagens muito abaixo de 64MiB", () => {
+  const calls = [];
+  const storage = storageModule.createStorage({
+    GM_setValue: (key, value) => calls.push([key, value])
+  });
+
+  const unicodePayload = { data: "😀".repeat(3 * 1024 * 1024) };
+  assert.equal(storage.write("unicode-grande", unicodePayload), false);
+  assert.deepEqual(calls, []);
+});
+
 test("lista as chaves via GM_listValues e pelo fallback localStorage", () => {
   const gmValues = new Map([["a", 1], ["b", 2]]);
   const localValues = new Map([["c", "x"], ["d", "y"]]);

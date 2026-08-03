@@ -6,6 +6,7 @@
     if (!modules || !modules.storage || !modules.automationState || !modules.printBlocker || !root.document) return;
     var storage = modules.storage.createStorage(root);
     var stateModule = modules.automationState;
+    stateModule.ensureGmStateSafety(storage);
     var state = stateModule.normalizeState(storage.read(stateModule.STATE_KEY, stateModule.defaultState()));
     var pageWindow = root;
     var addElement = null;

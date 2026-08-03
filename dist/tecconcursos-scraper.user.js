@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      2.7.3
+// @version      2.7.4
 // @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.
 // @author       Codex
 // @match        https://www.tecconcursos.com.br/*
@@ -823,16 +823,21 @@
     var hasDelete = typeof runtime.GM_deleteValue === "function";
     var usesGM = hasGet || hasSet || hasDelete || typeof runtime.GM_listValues === "function";
     var local = runtime.localStorage;
-    var maxWriteChars = 40 * 1024 * 1024;
+    // Chromium extension messages are capped at 64 MiB. Keep a large margin for
+    // the Tampermonkey bridge, JSON encoding and message envelope overhead.
+    var maxWriteBytes = hasSet ? 8 * 1024 * 1024 : 40 * 1024 * 1024;
 
-    function serializedLength(value) {
+    function serializedByteLength(value) {
       try {
         if (value == null) return 0;
-        if (typeof value === "string") return value.length;
-        if (typeof value === "number" || typeof value === "boolean") return String(value).length;
-        return JSON.stringify(value).length;
+        var serialized = typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+          ? String(value)
+          : JSON.stringify(value);
+        if (serialized == null) return 0;
+        if (typeof TextEncoder === "function") return new TextEncoder().encode(serialized).byteLength;
+        return unescape(encodeURIComponent(serialized)).length;
       } catch (_) {
-        return 0;
+        return Number.MAX_SAFE_INTEGER;
       }
     }
 
@@ -853,7 +858,7 @@
     }
 
     function write(key, value) {
-      if (serializedLength(value) > maxWriteChars) return false;
+      if (serializedByteLength(value) > maxWriteBytes) return false;
       if (hasSet) {
         try {
           runtime.GM_setValue(key, value);
@@ -2595,6 +2600,7 @@
   "use strict";
 
   var STATE_KEY = "tecconcursos_caderno_automation_v1";
+  var GM_STATE_SAFETY_KEY = "tecconcursos_caderno_gm_state_safety_v1";
   var PLAN_KEY = "tecconcursos_caderno_plan_v1";
   var FOLDER_KEY = "tecconcursos_default_folder_id_v1";
   var MAX_PER_PRINT = 200;
@@ -2608,6 +2614,14 @@
 
   function normalizeState(value) {
     return value && typeof value === "object" && !Array.isArray(value) ? value : defaultState();
+  }
+
+  function ensureGmStateSafety(storage) {
+    if (!storage || storage.usesGM !== true) return false;
+    if (storage.read(GM_STATE_SAFETY_KEY, false)) return false;
+    if (typeof storage.remove === "function") storage.remove(STATE_KEY);
+    storage.write(GM_STATE_SAFETY_KEY, true);
+    return true;
   }
 
   function markProgress(state, patch) {
@@ -2638,6 +2652,7 @@
 
   return {
     STATE_KEY: STATE_KEY,
+    GM_STATE_SAFETY_KEY: GM_STATE_SAFETY_KEY,
     PLAN_KEY: PLAN_KEY,
     FOLDER_KEY: FOLDER_KEY,
     MAX_PER_PRINT: MAX_PER_PRINT,
@@ -2646,6 +2661,7 @@
     INACTIVITY_PAUSE_MS: INACTIVITY_PAUSE_MS,
     defaultState: defaultState,
     normalizeState: normalizeState,
+    ensureGmStateSafety: ensureGmStateSafety,
     markProgress: markProgress,
     appendEvent: appendEvent
   };
@@ -4908,7 +4924,7 @@
     launcher.appendChild(launcherStatus);
     var launcherPause = button(documentNode, "⏹ Parar", "");
     launcherPause.id = "tec-library-pause";
-    launcherPause.dataset.tecScraperVersion = "2.7.3";
+    launcherPause.dataset.tecScraperVersion = "2.7.4";
     launcherPause.setAttribute("aria-label", "Parar automação");
     var printCard = documentNode.createElement("div");
     printCard.id = "tec-library-print-card";
@@ -4944,9 +4960,9 @@
     launcherWrap.appendChild(printCard);
     var panel = documentNode.createElement("section");
     panel.id = "tec-library-panel";
-    panel.dataset.tecScraperVersion = "2.7.3";
-    launcher.dataset.tecScraperVersion = "2.7.3";
-    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.7.3</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
+    panel.dataset.tecScraperVersion = "2.7.4";
+    launcher.dataset.tecScraperVersion = "2.7.4";
+    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.7.4</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
     documentNode.body.appendChild(launcherWrap);
     documentNode.body.appendChild(panel);
     var body = panel.querySelector(".body");
@@ -5797,6 +5813,7 @@
     if (!modules || !modules.storage || !modules.automationState || !modules.printBlocker || !root.document) return;
     var storage = modules.storage.createStorage(root);
     var stateModule = modules.automationState;
+    stateModule.ensureGmStateSafety(storage);
     var state = stateModule.normalizeState(storage.read(stateModule.STATE_KEY, stateModule.defaultState()));
     var pageWindow = root;
     var addElement = null;

@@ -15,16 +15,21 @@
     var hasDelete = typeof runtime.GM_deleteValue === "function";
     var usesGM = hasGet || hasSet || hasDelete || typeof runtime.GM_listValues === "function";
     var local = runtime.localStorage;
-    var maxWriteChars = 40 * 1024 * 1024;
+    // Chromium extension messages are capped at 64 MiB. Keep a large margin for
+    // the Tampermonkey bridge, JSON encoding and message envelope overhead.
+    var maxWriteBytes = hasSet ? 8 * 1024 * 1024 : 40 * 1024 * 1024;
 
-    function serializedLength(value) {
+    function serializedByteLength(value) {
       try {
         if (value == null) return 0;
-        if (typeof value === "string") return value.length;
-        if (typeof value === "number" || typeof value === "boolean") return String(value).length;
-        return JSON.stringify(value).length;
+        var serialized = typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+          ? String(value)
+          : JSON.stringify(value);
+        if (serialized == null) return 0;
+        if (typeof TextEncoder === "function") return new TextEncoder().encode(serialized).byteLength;
+        return unescape(encodeURIComponent(serialized)).length;
       } catch (_) {
-        return 0;
+        return Number.MAX_SAFE_INTEGER;
       }
     }
 
@@ -45,7 +50,7 @@
     }
 
     function write(key, value) {
-      if (serializedLength(value) > maxWriteChars) return false;
+      if (serializedByteLength(value) > maxWriteBytes) return false;
       if (hasSet) {
         try {
           runtime.GM_setValue(key, value);

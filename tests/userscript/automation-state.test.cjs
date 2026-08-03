@@ -34,3 +34,24 @@ test("limita eventos diagnósticos e aplica o compactador recebido", () => {
   assert.equal(current.progress.events[0].phase, "waiting-questions");
   assert.equal(Object.hasOwn(current.progress.events[0].details, "secret"), false);
 });
+
+test("descarta uma vez o estado legado do GM sem tentar lê-lo", () => {
+  const reads = [];
+  const removals = [];
+  const writes = [];
+  const storage = {
+    usesGM: true,
+    read: (key, fallback) => {
+      reads.push(key);
+      if (key === state.GM_STATE_SAFETY_KEY) return false;
+      throw new Error("o estado grande não pode atravessar a ponte GM");
+    },
+    remove: key => removals.push(key),
+    write: (key, value) => writes.push([key, value])
+  };
+
+  assert.equal(state.ensureGmStateSafety(storage), true);
+  assert.deepEqual(reads, [state.GM_STATE_SAFETY_KEY]);
+  assert.deepEqual(removals, [state.STATE_KEY]);
+  assert.deepEqual(writes, [[state.GM_STATE_SAFETY_KEY, true]]);
+});
