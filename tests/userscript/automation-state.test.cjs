@@ -35,23 +35,23 @@ test("limita eventos diagnósticos e aplica o compactador recebido", () => {
   assert.equal(Object.hasOwn(current.progress.events[0].details, "secret"), false);
 });
 
-test("descarta uma vez o estado legado do GM sem tentar lê-lo", () => {
-  const reads = [];
-  const removals = [];
-  const writes = [];
+test("abandona o namespace GM v1 sem ler, excluir ou sobrescrever a chave contaminada", () => {
+  const operations = [];
   const storage = {
     usesGM: true,
     read: (key, fallback) => {
-      reads.push(key);
-      if (key === state.GM_STATE_SAFETY_KEY) return false;
-      throw new Error("o estado grande não pode atravessar a ponte GM");
+      operations.push(["read", key]);
+      if (key === "tecconcursos_caderno_automation_v1") {
+        throw new Error("Message exceeded maximum allowed size of 64MiB");
+      }
+      return fallback;
     },
-    remove: key => removals.push(key),
-    write: (key, value) => writes.push([key, value])
+    remove: key => operations.push(["remove", key]),
+    write: (key, value) => operations.push(["write", key, value])
   };
 
-  assert.equal(state.ensureGmStateSafety(storage), true);
-  assert.deepEqual(reads, [state.GM_STATE_SAFETY_KEY]);
-  assert.deepEqual(removals, [state.STATE_KEY]);
-  assert.deepEqual(writes, [[state.GM_STATE_SAFETY_KEY, true]]);
+  const current = state.readState(storage);
+
+  assert.deepEqual(current, state.defaultState());
+  assert.deepEqual(operations, [["read", "tecconcursos_caderno_automation_v2"]]);
 });

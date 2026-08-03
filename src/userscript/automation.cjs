@@ -67,7 +67,7 @@
     var library = config.library;
 
     function readState() {
-      return stateModule.normalizeState(storage.read(STATE_KEY, stateModule.defaultState()));
+      return stateModule.readState(storage);
     }
 
     var pauseRequestHandler = null;

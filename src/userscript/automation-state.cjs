@@ -8,8 +8,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  var STATE_KEY = "tecconcursos_caderno_automation_v1";
-  var GM_STATE_SAFETY_KEY = "tecconcursos_caderno_gm_state_safety_v1";
+  var STATE_KEY = "tecconcursos_caderno_automation_v2";
   var PLAN_KEY = "tecconcursos_caderno_plan_v1";
   var FOLDER_KEY = "tecconcursos_default_folder_id_v1";
   var MAX_PER_PRINT = 200;
@@ -25,12 +24,9 @@
     return value && typeof value === "object" && !Array.isArray(value) ? value : defaultState();
   }
 
-  function ensureGmStateSafety(storage) {
-    if (!storage || storage.usesGM !== true) return false;
-    if (storage.read(GM_STATE_SAFETY_KEY, false)) return false;
-    if (typeof storage.remove === "function") storage.remove(STATE_KEY);
-    storage.write(GM_STATE_SAFETY_KEY, true);
-    return true;
+  function readState(storage) {
+    if (!storage || typeof storage.read !== "function") return defaultState();
+    return normalizeState(storage.read(STATE_KEY, defaultState()));
   }
 
   function markProgress(state, patch) {
@@ -61,7 +57,6 @@
 
   return {
     STATE_KEY: STATE_KEY,
-    GM_STATE_SAFETY_KEY: GM_STATE_SAFETY_KEY,
     PLAN_KEY: PLAN_KEY,
     FOLDER_KEY: FOLDER_KEY,
     MAX_PER_PRINT: MAX_PER_PRINT,
@@ -70,7 +65,7 @@
     INACTIVITY_PAUSE_MS: INACTIVITY_PAUSE_MS,
     defaultState: defaultState,
     normalizeState: normalizeState,
-    ensureGmStateSafety: ensureGmStateSafety,
+    readState: readState,
     markProgress: markProgress,
     appendEvent: appendEvent
   };

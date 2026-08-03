@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TecConcursos - Coletor de Questões Pro
 // @namespace    https://github.com/YsraEstudos/Tecconcursos
-// @version      2.7.4
+// @version      2.7.5
 // @description  Coleta questões e cria/exporta cadernos para uma biblioteca local com Excel e HTML interativo.
 // @author       Codex
 // @match        https://www.tecconcursos.com.br/*
@@ -2599,8 +2599,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  var STATE_KEY = "tecconcursos_caderno_automation_v1";
-  var GM_STATE_SAFETY_KEY = "tecconcursos_caderno_gm_state_safety_v1";
+  var STATE_KEY = "tecconcursos_caderno_automation_v2";
   var PLAN_KEY = "tecconcursos_caderno_plan_v1";
   var FOLDER_KEY = "tecconcursos_default_folder_id_v1";
   var MAX_PER_PRINT = 200;
@@ -2616,12 +2615,9 @@
     return value && typeof value === "object" && !Array.isArray(value) ? value : defaultState();
   }
 
-  function ensureGmStateSafety(storage) {
-    if (!storage || storage.usesGM !== true) return false;
-    if (storage.read(GM_STATE_SAFETY_KEY, false)) return false;
-    if (typeof storage.remove === "function") storage.remove(STATE_KEY);
-    storage.write(GM_STATE_SAFETY_KEY, true);
-    return true;
+  function readState(storage) {
+    if (!storage || typeof storage.read !== "function") return defaultState();
+    return normalizeState(storage.read(STATE_KEY, defaultState()));
   }
 
   function markProgress(state, patch) {
@@ -2652,7 +2648,6 @@
 
   return {
     STATE_KEY: STATE_KEY,
-    GM_STATE_SAFETY_KEY: GM_STATE_SAFETY_KEY,
     PLAN_KEY: PLAN_KEY,
     FOLDER_KEY: FOLDER_KEY,
     MAX_PER_PRINT: MAX_PER_PRINT,
@@ -2661,7 +2656,7 @@
     INACTIVITY_PAUSE_MS: INACTIVITY_PAUSE_MS,
     defaultState: defaultState,
     normalizeState: normalizeState,
-    ensureGmStateSafety: ensureGmStateSafety,
+    readState: readState,
     markProgress: markProgress,
     appendEvent: appendEvent
   };
@@ -3848,7 +3843,7 @@
     var library = config.library;
 
     function readState() {
-      return stateModule.normalizeState(storage.read(STATE_KEY, stateModule.defaultState()));
+      return stateModule.readState(storage);
     }
 
     var pauseRequestHandler = null;
@@ -4924,7 +4919,7 @@
     launcher.appendChild(launcherStatus);
     var launcherPause = button(documentNode, "⏹ Parar", "");
     launcherPause.id = "tec-library-pause";
-    launcherPause.dataset.tecScraperVersion = "2.7.4";
+    launcherPause.dataset.tecScraperVersion = "2.7.5";
     launcherPause.setAttribute("aria-label", "Parar automação");
     var printCard = documentNode.createElement("div");
     printCard.id = "tec-library-print-card";
@@ -4960,9 +4955,9 @@
     launcherWrap.appendChild(printCard);
     var panel = documentNode.createElement("section");
     panel.id = "tec-library-panel";
-    panel.dataset.tecScraperVersion = "2.7.4";
-    launcher.dataset.tecScraperVersion = "2.7.4";
-    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.7.4</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
+    panel.dataset.tecScraperVersion = "2.7.5";
+    launcher.dataset.tecScraperVersion = "2.7.5";
+    panel.innerHTML = "<div class=\"head\"><strong>Biblioteca de Cadernos <small>v2.7.5</small></strong><button type=\"button\" data-action=\"close\">Fechar</button></div><div class=\"tabs\"><button type=\"button\" class=\"active\" data-tab=\"automation\">Automação</button><button type=\"button\" data-tab=\"library\">Pastas e arquivos</button><button type=\"button\" data-tab=\"ai-context\">AI Context</button></div><div class=\"body\"></div>";
     documentNode.body.appendChild(launcherWrap);
     documentNode.body.appendChild(panel);
     var body = panel.querySelector(".body");
@@ -5813,8 +5808,7 @@
     if (!modules || !modules.storage || !modules.automationState || !modules.printBlocker || !root.document) return;
     var storage = modules.storage.createStorage(root);
     var stateModule = modules.automationState;
-    stateModule.ensureGmStateSafety(storage);
-    var state = stateModule.normalizeState(storage.read(stateModule.STATE_KEY, stateModule.defaultState()));
+    var state = stateModule.readState(storage);
     var pageWindow = root;
     var addElement = null;
     try {

@@ -7,7 +7,7 @@ const { chromium } = require("playwright");
 
 const projectRoot = path.resolve(__dirname, "../..");
 const bundle = fs.readFileSync(path.join(projectRoot, "tecconcursos-scraper.user.js"), "utf8");
-const stateKey = "tecconcursos_caderno_automation_v1";
+const stateKey = "tecconcursos_caderno_automation_v2";
 const libraryKey = "tecconcursos_export_library_index_v1";
 const libraryEntryPrefix = "tecconcursos_export_library_entry_v1:";
 const planKey = "tecconcursos_caderno_plan_v1";
@@ -413,7 +413,7 @@ test("reinicia a busca na pasta e reutiliza o caderno existente pelo nome", { ti
     }, { libraryKey, stateKey, entryPrefix: libraryEntryPrefix }, { timeout: 60000 });
     const result = await page.evaluate(({ libraryKey }) => ({
       library: JSON.parse(localStorage.getItem(libraryKey) || "{}"),
-      state: JSON.parse(localStorage.getItem("tecconcursos_caderno_automation_v1") || "{}"),
+      state: JSON.parse(localStorage.getItem("tecconcursos_caderno_automation_v2") || "{}"),
       href: location.href
     }), { libraryKey });
     assert.equal(result.library.entries["9000001"].title, "Coesão textual - Base FCC");
