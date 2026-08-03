@@ -13,6 +13,7 @@
     var hasGet = typeof runtime.GM_getValue === "function";
     var hasSet = typeof runtime.GM_setValue === "function";
     var hasDelete = typeof runtime.GM_deleteValue === "function";
+    var usesGM = hasGet || hasSet || hasDelete || typeof runtime.GM_listValues === "function";
     var local = runtime.localStorage;
     var maxWriteChars = 40 * 1024 * 1024;
 
@@ -97,7 +98,7 @@
       return keys;
     }
 
-    return { read: read, write: write, remove: remove, list: list };
+    return { read: read, write: write, remove: remove, list: list, usesGM: usesGM };
   }
 
   return { createStorage: createStorage };

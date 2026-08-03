@@ -193,6 +193,7 @@ Este contexto reúne apenas contratos observados no código deste projeto, no HT
 - A árvore usa itens com `.arvore-item-conteudo.arvore-borda` e `ng-click="vm.notificarClick()"`. O `span.arvore-item-nome` é texto visual; o clique confiável deve ocorrer no contêiner Angular ou usar o fallback Angular validado pelos testes.
 - O assunto de exemplo foi `Coerência. Coesão (Anáfora, Catáfora, Uso dos Conectores - Pronomes Relativos, Conjunções, etc)`.
 - O nome do caderno deve ser o título do plano, por exemplo `Coesão textual - Conectivos básicos`, e não o título da taxonomia do TecConcursos.
+- O plano pode ser exportado pelo painel em Markdown consolidado (`Tecconcursos_Materias_Consolidado-{data}.md`) com `plan.serializePlan`, no formato reverso do import: grupos, linhas `MAT-xxx — título`/`PRAT-xx — título` e `TecConcursos: ID — caminho`.
 - A seleção de banca é feita clicando no item real da árvore. O nome observado para a banca foi `OBJETIVA CONCURSOS`; outros nomes devem ser resolvidos pelo texto real exibido pelo site.
 - Os anos devem ser selecionados clicando nos itens da árvore. Não se deve apenas escrever o ano em um campo, porque a seleção precisa atualizar o estado Angular do filtro.
 - Critérios solicitados pelo plano: anos `2016` a `2026` conforme a lista configurada, remover questões desatualizadas e remover questões anuladas.

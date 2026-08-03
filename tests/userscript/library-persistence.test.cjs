@@ -236,6 +236,27 @@ test("blob legado inacessível (acima do limite do GM) é removido e a bibliotec
   assert.equal(removals.filter(key => key.indexOf(library.LIBRARY_ENTRY_PREFIX) === 0).length, 0, "entradas por chave não são apagadas");
 });
 
+test("não lê o blob legado quando ele pertence ao armazenamento GM", () => {
+  const reads = [];
+  const removals = [];
+  const storage = {
+    usesGM: true,
+    read(key, fallback) {
+      reads.push(key);
+      if (key === library.LEGACY_KEY) throw new Error("Message exceeded maximum allowed size of 64MiB");
+      return fallback;
+    },
+    write() { return true; },
+    remove(key) { removals.push(key); },
+    list() { return [library.LEGACY_KEY]; }
+  };
+
+  library.createLibrary(storage);
+
+  assert.equal(reads.includes(library.LEGACY_KEY), false, "blob GM legado não é carregado");
+  assert.ok(removals.includes(library.LEGACY_KEY), "blob GM legado é removido sem leitura");
+});
+
 test("limpeza da chave legada acontece uma única vez", () => {
   const legacy = {
     version: 1,

@@ -123,6 +123,14 @@
         automation.savePlan(plan);
         return plan.matters.length + " matéria(s) salva(s) no plano.";
       },
+      onExportPlan: function () {
+        var plan = automation.readPlan();
+        if (!plan.matters.length) return "Nenhum plano salvo para exportar.";
+        var markdown = modules.plan.serializePlan(plan);
+        var stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 10);
+        modules.library.downloadBlob(documentNode, "Tecconcursos_Materias_Consolidado-" + stamp + ".md", new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
+        return plan.matters.length + " matéria(s) exportada(s) como Markdown consolidado.";
+      },
            onCreate: function (folderId) {
              if (root.confirm && !root.confirm("Criar cadernos e iniciar a exportação do plano? O processo poderá ser pausado e retomado.")) return "Operação cancelada.";
              var result = automation.startCreation(folderId);

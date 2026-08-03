@@ -26,6 +26,7 @@ test("não envia valores maiores que o limite de 64MiB para o GM", () => {
     GM_deleteValue: () => {}
   };
   const storage = storageModule.createStorage(host);
+  assert.equal(storage.usesGM, true);
   const oversized = { data: "x".repeat(41 * 1024 * 1024) };
   assert.equal(storage.write("gigante", oversized), false);
   assert.deepEqual(calls, []);
@@ -47,8 +48,10 @@ test("lista as chaves via GM_listValues e pelo fallback localStorage", () => {
     }
   };
   const storage = storageModule.createStorage(host);
+  assert.equal(storage.usesGM, true);
   assert.deepEqual(storage.list(), ["a", "b"]);
 
   const withoutGM = storageModule.createStorage({ localStorage: host.localStorage });
+  assert.equal(withoutGM.usesGM, false);
   assert.deepEqual(withoutGM.list(), ["c", "d"]);
 });

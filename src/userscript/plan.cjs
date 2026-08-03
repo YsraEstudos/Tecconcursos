@@ -111,6 +111,25 @@
     return plan;
   }
 
+  function serializePlan(plan) {
+    var normalized = normalizePlan(plan);
+    var lines = [];
+    var currentGroup = null;
+    normalized.matters.forEach(function (matter) {
+      var group = matter.group || "Sem grupo";
+      if (group !== currentGroup && group !== "Sem grupo") {
+        lines.push(group);
+        currentGroup = group;
+      }
+      lines.push(matter.code + " — " + matter.title);
+      (matter.subjectIds || []).forEach(function (id, index) {
+        var path = matter.subjectPaths && matter.subjectPaths[index];
+        if (path) lines.push("TecConcursos: " + id + " — " + path);
+      });
+    });
+    return lines.join("\n") + "\n";
+  }
+
   function displayName(matter) {
     var item = normalizeMatter(matter);
     return item.code + " — " + item.title;
@@ -127,6 +146,7 @@
     normalizePlan: normalizePlan,
     parseConsolidatedMarkdown: parseConsolidatedMarkdown,
     parsePlanText: parsePlanText,
+    serializePlan: serializePlan,
     normalizeMatter: normalizeMatter,
     displayName: displayName,
     lastPathSegment: lastPathSegment

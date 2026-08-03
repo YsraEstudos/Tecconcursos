@@ -311,16 +311,20 @@
       if (exists) {
         var migrated = false;
         var readable = false;
-        try {
-          var raw = storage.read(LEGACY_KEY, null);
-          if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-            readable = true;
-            var library = normalizeLibrary(raw);
-            migrated = migrateLegacy(library);
-            writeIndex(library);
-          }
-        } catch (_) {}
-        if (migrated || !readable) {
+        var usesGM = storage.usesGM === true;
+        if (!usesGM) {
+          try {
+            var raw = storage.read(LEGACY_KEY, null);
+            if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+              readable = true;
+              var library = normalizeLibrary(raw);
+              migrated = migrateLegacy(library);
+              writeIndex(library);
+            }
+          } catch (_) {}
+        }
+        // Chromium limits extension messages to 64 MiB; never transport the deprecated GM blob.
+        if (usesGM || migrated || !readable) {
           try {
             if (typeof storage.remove === "function") storage.remove(LEGACY_KEY);
           } catch (_) {}

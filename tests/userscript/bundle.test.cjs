@@ -13,7 +13,7 @@ test("bundle tem metadata válida, rota de caderno e atualização", () => {
   const bundle = fs.readFileSync(bundlePath, "utf8");
   assert.match(bundle, /^\/\/ ==UserScript==/);
   assert.match(bundle, /\/\/ ==\/UserScript==/);
-  assert.match(bundle, /@version\s+2\.7\.2/);
+  assert.match(bundle, /@version\s+2\.7\.3/);
   assert.match(bundle, /@match\s+https:\/\/www\.tecconcursos\.com\.br\/\*/);
   assert.match(bundle, /@match\s+https:\/\/tecconcursos\.com\.br\/\*/);
   assert.match(bundle, /@run-at\s+document-start/);
@@ -41,6 +41,7 @@ test("bundle tem metadata válida, rota de caderno e atualização", () => {
   assert.match(bundle, /Parar automação/);
   assert.match(bundle, /tec-library-pause/);
   assert.match(bundle, /Reiniciar busca de materiais/);
+  assert.match(bundle, /Exportar plano/);
   assert.match(bundle, /Retomar automação/);
   assert.match(bundle, /id="feedback"/);
   assert.match(bundle, /\.option\.correct/);
