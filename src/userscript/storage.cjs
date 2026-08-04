@@ -15,9 +15,18 @@
     var hasDelete = typeof runtime.GM_deleteValue === "function";
     var usesGM = hasGet || hasSet || hasDelete || typeof runtime.GM_listValues === "function";
     var local = runtime.localStorage;
-    // Chromium extension messages are capped at 64 MiB. Keep a large margin for
-    // the Tampermonkey bridge, JSON encoding and message envelope overhead.
+    // Incident fix from commits 162ed2c-10f8943: Chromium extension messages are
+    // capped at 64 MiB. Keep an 8 MiB margin for the Tampermonkey bridge, JSON
+    // encoding and message envelope overhead. Revisit only if the bridge limit
+    // changes and the aggregate-storage regression tests are updated.
+    var gmMessageLimitBytes = 64 * 1024 * 1024;
+    var gmTotalSafetyMarginBytes = 8 * 1024 * 1024;
     var maxWriteBytes = hasSet ? 8 * 1024 * 1024 : 40 * 1024 * 1024;
+    var maxTotalBytes = hasSet ? gmMessageLimitBytes - gmTotalSafetyMarginBytes : Number.MAX_SAFE_INTEGER;
+    var retiredGmKeys = {
+      "tecconcursos_caderno_automation_v1": true,
+      "tecconcursos_export_library_v1": true
+    };
 
     function serializedByteLength(value) {
       try {
@@ -31,6 +40,56 @@
       } catch (_) {
         return Number.MAX_SAFE_INTEGER;
       }
+    }
+
+    function storageEntryByteLength(key, value) {
+      var valueBytes = serializedByteLength(value);
+      var keyBytes = serializedByteLength(String(key));
+      if (valueBytes >= Number.MAX_SAFE_INTEGER || keyBytes >= Number.MAX_SAFE_INTEGER) return Number.MAX_SAFE_INTEGER;
+      return valueBytes + keyBytes;
+    }
+
+    function listGmKeys() {
+      if (typeof runtime.GM_listValues !== "function") return null;
+      try {
+        var keys = runtime.GM_listValues();
+        return Array.isArray(keys) ? keys : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function purgeRetiredGmKeys() {
+      if (!hasDelete) return;
+      var keys = listGmKeys();
+      if (!keys) return;
+      keys.forEach(function (key) {
+        if (!retiredGmKeys[String(key)]) return;
+        try { runtime.GM_deleteValue(key); } catch (_) {}
+      });
+    }
+
+    function currentGmUsageBytes(replacingKey) {
+      if (!hasGet || !hasSet) return null;
+      var keys = listGmKeys();
+      if (!keys) return null;
+      var targetKey = String(replacingKey);
+      var total = 0;
+      for (var index = 0; index < keys.length; index += 1) {
+        var key = String(keys[index]);
+        if (key === targetKey) continue;
+        if (retiredGmKeys[key]) return maxTotalBytes + 1;
+        var value;
+        try {
+          value = runtime.GM_getValue(key, null);
+        } catch (_) {
+          return null;
+        }
+        var entryBytes = storageEntryByteLength(key, value);
+        if (entryBytes >= Number.MAX_SAFE_INTEGER || total > maxTotalBytes - entryBytes) return maxTotalBytes + 1;
+        total += entryBytes;
+      }
+      return total;
     }
 
     function read(key, fallback) {
@@ -52,6 +111,9 @@
     function write(key, value) {
       if (serializedByteLength(value) > maxWriteBytes) return false;
       if (hasSet) {
+        var currentBytes = currentGmUsageBytes(key);
+        var nextBytes = storageEntryByteLength(key, value);
+        if (currentBytes == null || nextBytes >= Number.MAX_SAFE_INTEGER || currentBytes > maxTotalBytes - nextBytes) return false;
         try {
           runtime.GM_setValue(key, value);
           return true;
@@ -103,7 +165,15 @@
       return keys;
     }
 
-    return { read: read, write: write, remove: remove, list: list, usesGM: usesGM };
+    purgeRetiredGmKeys();
+
+    return {
+      read: read,
+      write: write,
+      remove: remove,
+      list: list,
+      usesGM: usesGM
+    };
   }
 
   return { createStorage: createStorage };
